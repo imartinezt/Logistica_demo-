@@ -1,6 +1,5 @@
-# models/schemas.py
 from pydantic import BaseModel, Field, validator
-from datetime import datetime
+from datetime import datetime, time
 from typing import Optional, List, Dict, Any, Union
 from enum import Enum
 
@@ -22,16 +21,27 @@ class TipoFlotaEnum(str, Enum):
     FI_FE = "FI_FE"  # Híbrida
 
 
+class EstadoRutaEnum(str, Enum):
+    FACTIBLE = "FACTIBLE"
+    NO_FACTIBLE = "NO_FACTIBLE"
+    CONDICIONAL = "CONDICIONAL"
+
+
 # =====================================
 # REQUEST/RESPONSE SCHEMAS
 # =====================================
 
 class PredictionRequest(BaseModel):
     """📥 Request para predicción FEE"""
-    codigo_postal: str = Field(..., min_length=5, max_length=5, description="Código postal destino")
+    codigo_postal: str = Field(..., min_length=5, max_length=5,
+                               description="Código postal destino")
     sku_id: str = Field(..., description="ID del producto")
-    cantidad: int = Field(..., ge=1, le=50, description="Cantidad a entregar")
-    fecha_compra: Optional[datetime] = Field(default_factory=datetime.now, description="Fecha y hora de compra")
+    cantidad: int = Field(..., ge=1, le=100,
+                          description="Cantidad a entregar")
+    fecha_compra: Optional[datetime] = Field(
+        default_factory=datetime.now,
+        description="Fecha y hora exacta de compra"
+    )
 
     @validator('codigo_postal')
     def validate_cp(cls, v):
@@ -40,169 +50,249 @@ class PredictionRequest(BaseModel):
         return v
 
 
-class Razonamiento(BaseModel):
-    """🧠 Paso individual del razonamiento LangGraph + Gemini"""
-    paso: str = Field(..., description="Identificador del paso")
-    decision: str = Field(..., description="Decisión tomada en este paso")
-    factores: List[str] = Field(default_factory=list, description="Factores considerados")
-    score: float = Field(..., ge=0, le=1, description="Score de confianza")
-    alternativas: List[Dict] = Field(default_factory=list, description="Alternativas evaluadas")
-    tiempo_procesamiento_ms: Optional[float] = Field(None, description="Tiempo de procesamiento en ms")
+# =====================================
+# INVENTORY & SPLIT SCHEMAS
+# =====================================
+
+class UbicacionStock(BaseModel):
+    """📦 Stock en una ubicación específica"""
+    ubicacion_id: str = Field(..., description="ID de tienda o CEDIS")
+    ubicacion_tipo: str = Field(..., description="TIENDA | CEDIS")
+    nombre_ubicacion: str = Field(..., description="Nombre legible")
+    stock_disponible: int = Field(..., ge=0, description="Stock OH disponible")
+    stock_reservado: int = Field(default=0, ge=0, description="Stock reservado")
+    coordenadas: Dict[str, float] = Field(..., description="lat, lon")
+    horario_operacion: str = Field(..., description="Horario de la ubicación")
+    tiempo_preparacion_horas: float = Field(
+        default=1.5, description="Tiempo picking/packing"
+    )
 
 
-class FactoresExternosDetectados(BaseModel):
-    """🌤️ Factores externos detectados automáticamente"""
+class SplitInventory(BaseModel):
+    """🔄 Split de inventario entre múltiples ubicaciones"""
+    ubicaciones: List[UbicacionStock] = Field(
+        ..., description="Ubicaciones con stock"
+    )
+    cantidad_total_requerida: int = Field(..., ge=1)
+    cantidad_total_disponible: int = Field(..., ge=0)
+    es_split_factible: bool = Field(..., description="Si el split es posible")
+    razon_split: str = Field(..., description="Por qué se hace el split")
+
+
+# =====================================
+# ROUTE & LOGISTICS SCHEMAS
+# =====================================
+
+class Segmento(BaseModel):
+    """🚚 Segmento individual de una ruta"""
+    segmento_id: str = Field(..., description="ID único del segmento")
+    origen_id: str = Field(..., description="ID ubicación origen")
+    destino_id: str = Field(..., description="ID ubicación destino")
+    origen_nombre: str = Field(..., description="Nombre origen")
+    destino_nombre: str = Field(..., description="Nombre destino")
+    distancia_km: float = Field(..., ge=0, description="Distancia real")
+    tiempo_viaje_horas: float = Field(..., ge=0, description="Tiempo de viaje")
+    tipo_flota: TipoFlotaEnum = Field(..., description="Tipo de flota")
+    carrier: str = Field(..., description="Carrier responsable")
+    costo_segmento_mxn: float = Field(..., ge=0, description="Costo del segmento")
+    factores_aplicados: List[str] = Field(
+        default_factory=list, description="Factores que afectaron el segmento"
+    )
+
+
+class RutaCompleta(BaseModel):
+    """🗺️ Ruta completa multi-segmento"""
+    ruta_id: str = Field(..., description="ID único de la ruta")
+    segmentos: List[Segmento] = Field(..., description="Segmentos de la ruta")
+    split_inventory: Optional[SplitInventory] = Field(
+        None, description="Info de split si aplica"
+    )
+
+    # Métricas consolidadas
+    tiempo_total_horas: float = Field(..., ge=0, description="Tiempo total")
+    costo_total_mxn: float = Field(..., ge=0, description="Costo total")
+    distancia_total_km: float = Field(..., ge=0, description="Distancia total")
+
+    # Scores
+    score_tiempo: float = Field(..., ge=0, le=1, description="Score tiempo normalizado")
+    score_costo: float = Field(..., ge=0, le=1, description="Score costo normalizado")
+    score_confiabilidad: float = Field(..., ge=0, le=1, description="Score confiabilidad")
+    score_lightgbm: Optional[float] = Field(None, description="Score LightGBM")
+
+    # Estado y viabilidad
+    estado: EstadoRutaEnum = Field(..., description="Estado de la ruta")
+    probabilidad_cumplimiento: float = Field(..., ge=0, le=1)
+    factores_riesgo: List[str] = Field(default_factory=list)
+
+
+# =====================================
+# EXTERNAL FACTORS SCHEMAS
+# =====================================
+
+class FactoresExternos(BaseModel):
+    """🌤️ Factores externos detectados y calculados"""
+    fecha_analisis: datetime = Field(..., description="Fecha del análisis")
+
+    # Eventos temporales
     eventos_detectados: List[str] = Field(default_factory=list)
     factor_demanda: float = Field(default=1.0, ge=0.5, le=5.0)
-    condicion_clima: str = Field(default="Templado")
-    probabilidad_lluvia: int = Field(default=30, ge=0, le=100)
-    temperatura: int = Field(default=22)
-    trafico_nivel: str = Field(default="Moderado")
     es_temporada_alta: bool = Field(default=False)
-    impacto_tiempo_extra: int = Field(default=0, description="Horas extra por factores")
+
+    # Clima
+    condicion_clima: str = Field(default="Templado")
+    temperatura_celsius: int = Field(default=22, ge=-10, le=50)
+    probabilidad_lluvia: int = Field(default=30, ge=0, le=100)
+    viento_kmh: Optional[int] = Field(None, ge=0, le=200)
+
+    # Tráfico y logística
+    trafico_nivel: str = Field(default="Moderado")
+    impacto_tiempo_extra_horas: float = Field(default=0.0, ge=0)
+    impacto_costo_extra_pct: float = Field(default=0.0, ge=0)
+
+    # Factores de zona
+    zona_seguridad: str = Field(default="Media")
+    restricciones_vehiculares: List[str] = Field(default_factory=list)
+
+    # Criticidad general
+    criticidad_logistica: str = Field(
+        default="Normal",
+        description="Baja|Normal|Media|Alta|Crítica"
+    )
 
 
-class AnalisisStock(BaseModel):
-    """📦 Análisis de inventario disponible"""
-    ubicaciones_disponibles: int = Field(..., ge=0)
-    stock_total: int = Field(..., ge=0)
-    ubicacion_optima: str = Field(...)
-    stock_ubicacion_optima: int = Field(..., ge=0)
-    cobertura_demanda_dias: float = Field(..., ge=0)
-    necesita_reabastecimiento: bool = Field(...)
+# =====================================
+# OPTIMIZATION & ML SCHEMAS
+# =====================================
+
+class CandidatoRuta(BaseModel):
+    """🎯 Candidato generado por LightGBM"""
+    ruta: RutaCompleta = Field(..., description="Ruta completa")
+    score_lightgbm: float = Field(..., ge=0, le=1, description="Score ML")
+    ranking_position: int = Field(..., ge=1, description="Posición en ranking")
+    features_utilizadas: Dict[str, float] = Field(
+        ..., description="Features que usó LightGBM"
+    )
+    trade_offs: Dict[str, str] = Field(
+        default_factory=dict, description="Trade-offs identificados"
+    )
 
 
-class AnalisisRuta(BaseModel):
-    """🚚 Análisis de ruta seleccionada"""
-    ruta_id: str = Field(...)
-    eslabones_secuencia: str = Field(...)
-    nodo_origen: int = Field(...)
-    tiempo_base_horas: float = Field(..., ge=0)
-    tiempo_ajustado_horas: float = Field(..., ge=0)
-    costo_total_mxn: float = Field(..., ge=0)
-    probabilidad_cumplimiento: float = Field(..., ge=0, le=1)
-    tipo_flota: str = Field(...)
-    carrier: str = Field(...)
-    es_factible: bool = Field(...)
-    razon_seleccion: str = Field(...)
+class DecisionGemini(BaseModel):
+    """🧠 Decisión final de Gemini"""
+    candidato_seleccionado: CandidatoRuta = Field(..., description="Ganador")
+    razonamiento: str = Field(..., description="Por qué Gemini lo eligió")
+    candidatos_evaluados: List[CandidatoRuta] = Field(
+        ..., description="Todos los candidatos evaluados"
+    )
+    factores_decisivos: List[str] = Field(..., description="Factores clave")
+    confianza_decision: float = Field(..., ge=0, le=1)
+    alertas_gemini: List[str] = Field(default_factory=list)
+
+
+# =====================================
+# FINAL RESPONSE SCHEMA
+# =====================================
+
+class FEECalculation(BaseModel):
+    """🗓️ Cálculo final de FEE"""
+    fecha_entrega_estimada: datetime = Field(..., description="FEE calculada")
+    rango_horario_entrega: Dict[str, time] = Field(
+        ..., description="{'inicio': time, 'fin': time}"
+    )
+    tipo_entrega: TipoEntregaEnum = Field(..., description="Tipo de entrega")
+    tiempo_total_horas: float = Field(..., ge=0, description="Tiempo total real")
+
+    # Desglose de tiempos
+    tiempo_preparacion: float = Field(..., description="Tiempo picking/packing")
+    tiempo_transito: float = Field(..., description="Tiempo en tránsito")
+    tiempo_contingencia: float = Field(..., description="Tiempo buffer")
 
 
 class ExplicabilidadCompleta(BaseModel):
-    """📊 Explicabilidad completa del proceso de decisión"""
-    flujo_decision: List[Razonamiento] = Field(..., description="Flujo completo de razonamiento")
-    producto_info: Dict = Field(..., description="Información del producto")
-    zona_info: Dict = Field(..., description="Información de la zona")
-    stock_analisis: AnalisisStock = Field(..., description="Análisis de stock")
-    factores_externos_detectados: FactoresExternosDetectados = Field(..., description="Factores externos")
-    rutas_evaluadas: List[Dict] = Field(..., description="Top rutas evaluadas")
-    ruta_seleccionada: AnalisisRuta = Field(..., description="Ruta final seleccionada")
-    tiempo_breakdown: Dict = Field(..., description="Desglose de tiempos")
-    costo_breakdown: Dict = Field(..., description="Desglose de costos")
-    warnings: List[str] = Field(default_factory=list, description="Advertencias del proceso")
-    tiempo_total_procesamiento_ms: Optional[float] = Field(None, description="Tiempo total de procesamiento")
+    """📊 Explicabilidad completa del proceso"""
+
+    # Datos de entrada
+    request_procesado: PredictionRequest = Field(..., description="Request original")
+    factores_externos: FactoresExternos = Field(..., description="Factores detectados")
+
+    # Split de inventario si aplica
+    split_inventory: Optional[SplitInventory] = Field(None)
+
+    # Proceso de optimización
+    candidatos_lightgbm: List[CandidatoRuta] = Field(
+        ..., description="Candidatos generados por ML"
+    )
+    decision_gemini: DecisionGemini = Field(
+        ..., description="Decisión final de Gemini"
+    )
+
+    # Métricas finales
+    fee_calculation: FEECalculation = Field(..., description="Cálculo FEE")
+
+    # Performance y debugging
+    tiempo_procesamiento_ms: float = Field(..., ge=0)
+    warnings: List[str] = Field(default_factory=list)
+    debug_info: Dict[str, Any] = Field(default_factory=dict)
 
 
 class PredictionResponse(BaseModel):
-    """📤 Respuesta completa de predicción FEE"""
-    fecha_entrega_estimada: datetime = Field(..., description="FEE calculada")
-    codigo_postal: str = Field(..., description="CP destino")
+    """📤 Respuesta final del sistema"""
+
+    # Resultado principal
+    fecha_entrega_estimada: datetime = Field(..., description="FEE final")
+    rango_horario: Dict[str, str] = Field(
+        ..., description="Rango de horario de entrega"
+    )
+
+    # Información logística
+    ruta_seleccionada: RutaCompleta = Field(..., description="Ruta ganadora")
     tipo_entrega: TipoEntregaEnum = Field(..., description="Tipo de entrega")
-    costo_envio_mxn: float = Field(..., ge=0, description="Costo de envío")
-    es_flota_externa: bool = Field(..., description="Si usa flota externa")
-    carrier_asignado: str = Field(..., description="Carrier responsable")
-    tiempo_estimado_horas: float = Field(..., ge=0, description="Tiempo estimado total")
-    probabilidad_cumplimiento: float = Field(..., ge=0, le=1, description="Probabilidad de cumplir FEE")
-    explicabilidad: ExplicabilidadCompleta = Field(..., description="Explicabilidad completa")
+    carrier_principal: str = Field(..., description="Carrier responsable")
+
+    # Costos y métricas
+    costo_envio_mxn: float = Field(..., ge=0, description="Costo total")
+    probabilidad_cumplimiento: float = Field(..., ge=0, le=1)
+    confianza_prediccion: float = Field(..., ge=0, le=1)
+
+    # Explicabilidad
+    explicabilidad: ExplicabilidadCompleta = Field(
+        ..., description="Explicabilidad completa"
+    )
+
+    # Metadatos
+    timestamp_response: datetime = Field(default_factory=datetime.now)
+    version_sistema: str = Field(default="3.0.0")
 
 
 # =====================================
-# INSIGHTS SCHEMAS
+# ERROR HANDLING SCHEMAS
 # =====================================
 
-class InsightProductos(BaseModel):
-    """📊 Insights del catálogo de productos"""
-    total_productos: int = Field(..., ge=0)
-    por_categoria: Dict[str, int] = Field(default_factory=dict)
-    por_nivel_demanda: Dict[str, int] = Field(default_factory=dict)
-    productos_fragiles: int = Field(..., ge=0)
-    peso_promedio: float = Field(..., ge=0)
-    precio_promedio: float = Field(..., ge=0)
-    productos_temporada_actual: List[Dict] = Field(default_factory=list)
-    top_productos_caros: List[Dict] = Field(default_factory=list)
+class ErrorDetail(BaseModel):
+    """❌ Detalle de error específico"""
+    error_code: str = Field(..., description="Código único del error")
+    error_type: str = Field(..., description="Tipo de error")
+    message: str = Field(..., description="Mensaje legible")
+    field: Optional[str] = Field(None, description="Campo que causó el error")
+    suggestion: Optional[str] = Field(None, description="Sugerencia de resolución")
 
 
-class InsightInventarios(BaseModel):
-    """📦 Insights de inventarios"""
-    total_skus: int = Field(..., ge=0)
-    stock_total: int = Field(..., ge=0)
-    stock_disponible: int = Field(..., ge=0)
-    utilizacion_por_nodo: Dict[str, float] = Field(default_factory=dict)
-    productos_bajo_stock: List[Dict] = Field(default_factory=list)
-    rotacion_promedio: float = Field(..., ge=0)
-    nodos_criticos: List[str] = Field(default_factory=list)
-
-
-class InsightRutas(BaseModel):
-    """🚚 Insights de rutas"""
-    total_rutas: int = Field(..., ge=0)
-    rutas_activas: int = Field(..., ge=0)
-    por_tipo_flota: Dict[str, int] = Field(default_factory=dict)
-    tiempo_promedio: float = Field(..., ge=0)
-    costo_promedio: float = Field(..., ge=0)
-    probabilidad_promedio: float = Field(..., ge=0, le=1)
-    rutas_mas_eficientes: List[Dict] = Field(default_factory=list)
-    rutas_problematicas: List[Dict] = Field(default_factory=list)
-
-
-# =====================================
-# ANALYSIS SCHEMAS
-# =====================================
-
-class AnalisisZona(BaseModel):
-    """🏠 Análisis completo de zona"""
-    codigo_postal: str = Field(...)
-    zona_info: Dict = Field(...)
-    es_zona_roja: bool = Field(...)
-    nivel_riesgo: str = Field(...)
-    flota_recomendada: str = Field(...)
-    factores_riesgo: List[str] = Field(default_factory=list)
-    recomendaciones: List[str] = Field(default_factory=list)
-    tiempo_extra_estimado: str = Field(...)
-
-
-class AnalisisProducto(BaseModel):
-    """📦 Análisis completo de producto"""
-    sku_id: str = Field(...)
-    producto_info: Dict = Field(...)
-    stock_ubicaciones: List[Dict] = Field(default_factory=list)
-    analisis_demanda: Dict = Field(...)
-    consideraciones_especiales: List[str] = Field(default_factory=list)
-    recomendaciones: List[str] = Field(default_factory=list)
-
-
-class DashboardResumen(BaseModel):
-    """📊 Resumen para dashboard ejecutivo"""
-    kpis_principales: Dict[str, int] = Field(...)
-    alertas_operativas: List[str] = Field(default_factory=list)
-    rendimiento_sistema: Dict[str, str] = Field(...)
-    timestamp: str = Field(...)
+class ErrorResponse(BaseModel):
+    """💥 Respuesta de error estructurada"""
+    success: bool = Field(default=False)
+    errors: List[ErrorDetail] = Field(..., description="Lista de errores")
+    request_id: Optional[str] = Field(None, description="ID para debugging")
+    timestamp: datetime = Field(default_factory=datetime.now)
+    debug_trace: Optional[Dict[str, Any]] = Field(None)
 
 
 # =====================================
 # VALIDATION HELPERS
 # =====================================
 
-class ResponseStatus(BaseModel):
-    """✅ Status response genérico"""
-    status: str = Field(...)
-    message: str = Field(...)
-    timestamp: datetime = Field(default_factory=datetime.now)
-    data: Optional[Dict] = Field(None)
-
-
-class ErrorResponse(BaseModel):
-    """❌ Error response"""
-    error: str = Field(...)
-    detail: str = Field(...)
-    path: Optional[str] = Field(None)
-    timestamp: datetime = Field(default_factory=datetime.now)
+class ValidationResult(BaseModel):
+    """✅ Resultado de validación"""
+    is_valid: bool = Field(..., description="Si es válido")
+    errors: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+    data_processed: Optional[Dict[str, Any]] = Field(None)
