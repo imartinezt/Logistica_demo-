@@ -4,6 +4,7 @@ from typing import TypedDict, Dict, List, Optional
 import time
 from datetime import datetime
 
+from config.settings import settings
 from models.schemas import PredictionRequest, Razonamiento
 from services.ai.gemini_service import GeminiReasoningService
 from utils.logger import logger
@@ -275,36 +276,48 @@ class LangGraphReasoningEngine:
         return state
 
     async def _evaluate_feasible_routes(self, state: ReasoningState) -> ReasoningState:
-        """🚚 Paso 6: Evaluar rutas factibles (cálculos + filtros)"""
-        rutas_evaluadas = []
-        stock_nodos = [s['nodo_id'] for s in state['stock_disponible']]
+        """🚚 Paso 6: evaluar rutas factibles (con filtros extra)"""
+        rutas_evaluadas: List[Dict] = []
+        hora_pedido = state["request"].fecha_compra.hour
+        stock_nodos = [s["nodo_id"] for s in state["stock_disponible"]]
 
         for nodo_id in stock_nodos:
-            rutas_df = self.repos['route'].get_feasible_routes(nodo_id, state['request'].codigo_postal)
+            rutas_df = self.repos["route"].get_feasible_routes(
+                nodo_id, state["request"].codigo_postal
+            )
 
             for ruta in rutas_df.to_dicts():
-                # Filtrar por zona roja
-                if state['es_zona_roja'] and ruta['tipo_flota'] == 'FI':
+                # 1️⃣ Zona roja
+                if state["es_zona_roja"] and ruta["tipo_flota"] == "FI":
                     continue
 
-                # Aplicar factores externos
-                factor_demanda = state['factores_externos'].get('factor_demanda', 1.0)
-                tiempo_ajustado = ruta['tiempo_total_horas'] * factor_demanda
-                tiempo_ajustado += state['gemini_decisions'].get('factores', {}).get('impacto_tiempo_horas', 0)
+                # 2️⃣ Cut‑off – descarta rutas ya cerradas
+                cut_off_hora = int(str(ruta.get("cut_off_origen", "23:59")).split(":")[0])
+                if hora_pedido > cut_off_hora:
+                    continue
 
-                ruta_evaluada = {
-                    **ruta,
-                    'nodo_stock': nodo_id,
-                    'tiempo_ajustado': tiempo_ajustado,
-                    'factible': True
-                }
-                rutas_evaluadas.append(ruta_evaluada)
+                # 3️⃣ Tiempo ajustado: demanda + clima + distancia
+                factor_demanda = state["factores_externos"].get("factor_demanda", 1.0)
+                extra_horas = state["gemini_decisions"].get("factores", {}).get(
+                    "impacto_tiempo_horas", 0
+                )
+                dist_penal = ruta.get("distancia_km", 0) * settings.PESO_DISTANCIA
+                tiempo_ajustado = ruta["tiempo_total_horas"] * factor_demanda + extra_horas + dist_penal
+
+                rutas_evaluadas.append(
+                    {
+                        **ruta,
+                        "nodo_stock": nodo_id,
+                        "tiempo_ajustado": tiempo_ajustado,
+                        "factible": True,
+                    }
+                )
 
         if not rutas_evaluadas:
             raise ValueError("Sin rutas factibles")
 
-        state['rutas_evaluadas'] = rutas_evaluadas
-        state['pasos_completados'] += 1
+        state["rutas_evaluadas"] = rutas_evaluadas
+        state["pasos_completados"] += 1
 
         # Convertir las alternativas a formato diccionario
         alternativas_dict = []

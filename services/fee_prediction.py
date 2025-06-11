@@ -48,40 +48,37 @@ class FEEPredictionService:
             raise
 
     def _build_final_response(self, state: ReasoningState) -> PredictionResponse:
-        """🏗️ Construye respuesta final desde estado LangGraph"""
-        mejor_ruta = state['mejor_ruta']
-        request = state['request']
-        gemini_decisions = state['gemini_decisions']
+        mejor_ruta = state["mejor_ruta"]
+        request = state["request"]
 
-        # 📅 Determinar tipo de entrega
+        # -- tipo de entrega basado en horas ajustadas
         tipo_entrega = self._determine_delivery_type(
-            mejor_ruta['tiempo_ajustado'],
-            request.fecha_compra.hour
+            mejor_ruta["tiempo_ajustado"], request.fecha_compra.hour
         )
 
-        # 🗓️ Calcular fecha de entrega
+        # -- fecha de entrega calculada con tiempo ajustado
         fecha_entrega = self._calculate_delivery_date(
-            request.fecha_compra,
-            tipo_entrega,
-            mejor_ruta['tiempo_ajustado']
+            request.fecha_compra, tipo_entrega, mejor_ruta["tiempo_ajustado"]
         )
 
-        # 🚚 Determinar carrier
-        carrier = self._determine_carrier(mejor_ruta['tipo_flota'])
+        # -- tiempo real en horas (después de recortes por horario laboral)
+        tiempo_estimado_real = round(
+            (fecha_entrega - request.fecha_compra).total_seconds() / 3600, 2
+        )
 
-        # 📊 Construir explicabilidad completa
+        carrier = self._determine_carrier(mejor_ruta["tipo_flota"])
         explicabilidad = self._build_explicabilidad_completa(state)
 
         return PredictionResponse(
             fecha_entrega_estimada=fecha_entrega,
             codigo_postal=request.codigo_postal,
             tipo_entrega=tipo_entrega,
-            costo_envio_mxn=float(mejor_ruta['costo_total_mxn']),
-            es_flota_externa=mejor_ruta['tipo_flota'] in ['FE', 'FI_FE'],
+            costo_envio_mxn=float(mejor_ruta["costo_total_mxn"]),
+            es_flota_externa=mejor_ruta["tipo_flota"] in ["FE", "FI_FE"],
             carrier_asignado=carrier,
-            tiempo_estimado_horas=float(mejor_ruta['tiempo_ajustado']),
-            probabilidad_cumplimiento=float(mejor_ruta['probabilidad_cumplimiento']),
-            explicabilidad=explicabilidad
+            tiempo_estimado_horas=tiempo_estimado_real,  #  ⏱️ valor coherente
+            probabilidad_cumplimiento=float(mejor_ruta["probabilidad_cumplimiento"]),
+            explicabilidad=explicabilidad,
         )
 
     def _determine_delivery_type(self, tiempo_horas: float, hora_compra: int) -> TipoEntregaEnum:

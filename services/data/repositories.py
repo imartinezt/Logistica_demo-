@@ -16,12 +16,12 @@ class BaseRepository(ABC):
         self.data_dir = data_dir
         self._cache = {}
 
-    @abstractmethod
-    def load_data(self) -> pl.DataFrame:
-        pass
-
     def clear_cache(self):
         self._cache.clear()
+
+    def load_data(self) -> pl.DataFrame:  # pragma: no cover – sobrescrito
+        raise NotImplementedError
+
 
 
 class ProductRepository(BaseRepository):
@@ -167,19 +167,21 @@ class RouteRepository(BaseRepository):
     """🚚 Repositorio de rutas combinadas"""
 
     def load_data(self) -> pl.DataFrame:
-        if 'routes' not in self._cache:
-            self._cache['routes'] = pl.read_csv(
-                self.data_dir / "rutas_combinadas.csv"
-            )
-        return self._cache['routes']
+        if "routes" not in self._cache:
+            self._cache["routes"] = pl.read_csv(self.data_dir / "rutas_combinadas.csv")
+        return self._cache["routes"]
 
     def get_feasible_routes(self, nodo_origen: int, codigo_postal_destino: str) -> pl.DataFrame:
-        """🛣️ Obtiene rutas factibles desde nodo origen"""
         df = self.load_data()
-        return df.filter(
-            (pl.col('nodo_origen') == nodo_origen) &
-            (pl.col('activa') == True)
-        ).sort('probabilidad_cumplimiento', descending=True)
+        cp_dest = int(codigo_postal_destino)
+        return (
+            df.filter(
+                (pl.col("nodo_origen") == nodo_origen)
+                & (pl.col("codigo_postal_destino") == cp_dest)
+                & (pl.col("activa") == True)
+            )
+            .sort("probabilidad_cumplimiento", descending=True)
+        )
 
     def get_insights(self) -> InsightRutas:
         """📊 Genera insights de rutas"""
