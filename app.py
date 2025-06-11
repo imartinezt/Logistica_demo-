@@ -8,10 +8,9 @@ from config.settings import settings
 from controllers.fee_controller import router as fee_router
 from utils.logger import setup_logging, logger
 
-# Setup logging
+
 setup_logging()
 
-# Create FastAPI app
 app = FastAPI(
     title=f"🎯 {settings.APP_NAME}",
     version=settings.VERSION,
@@ -41,7 +40,6 @@ async def add_process_time_header(request: Request, call_next):
 # Include router
 app.include_router(fee_router)
 
-# Root endpoint
 @app.get("/")
 async def root():
     """🏠 Liverpool FEE Predictor"""

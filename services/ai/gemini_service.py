@@ -19,13 +19,17 @@ class VertexAIModelSingleton:
     def get_model(cls) -> GenerativeModel:
         if cls._model is None:
             logger.info("🧠 Inicializando Gemini 2.0 Flash para decisiones logísticas")
-            vertexai.init(project=settings.PROJECT_ID, location=settings.REGION)
-            cls._model = GenerativeModel(settings.MODEL_NAME)
+            try:
+                vertexai.init(project=settings.PROJECT_ID, location=settings.REGION)
+                cls._model = GenerativeModel(settings.MODEL_NAME)
+            except Exception as e:
+                logger.error(f"❌ Error inicializando Gemini: {e}")
+                cls._model = None
         return cls._model
 
     @classmethod
     def get_chat_session(cls) -> ChatSession:
-        if cls._chat_session is None:
+        if cls._chat_session is None and cls.get_model():
             cls._chat_session = cls.get_model().start_chat()
         return cls._chat_session
 
@@ -62,29 +66,42 @@ class GeminiLogisticsDecisionEngine:
         if len(top_candidates) == 1:
             return {
                 'candidato_seleccionado': top_candidates[0],
-                'razonamiento': 'Único candidato disponible',
-                'confianza_decision': 0.8,
-                'factores_decisivos': ['unica_opcion_disponible']
+                'razonamiento': 'Único candidato disponible tras optimización',
+                'confianza_decision': 0.85,
+                'factores_decisivos': ['unica_opcion_factible'],
+                'candidatos_evaluados': top_candidates,
+                'timestamp_decision': datetime.now().isoformat(),
+                'alertas_operativas': []
             }
 
-        # Preparar contexto completo para Gemini
-        context_data = self._serialize_for_json({
-            'request': request_context,
-            'factores_externos': external_factors,
-            'candidatos': top_candidates,
-            'business_rules': settings.DELIVERY_RULES,
-            'weights': {
-                'tiempo': settings.PESO_TIEMPO,
-                'costo': settings.PESO_COSTO,
-                'probabilidad': settings.PESO_PROBABILIDAD,
-                'distancia': settings.PESO_DISTANCIA
-            }
-        })
-
-        prompt = self._build_route_selection_prompt(context_data)
+        # Verificar si Gemini está disponible
+        if not self.model:
+            logger.warning("⚠️ Gemini no disponible, usando selección automática")
+            return self._fallback_decision(top_candidates)
 
         try:
-            response = await self.model.generate_content_async(prompt)
+            # Preparar contexto completo para Gemini
+            context_data = self._serialize_for_json({
+                'request': request_context,
+                'factores_externos': external_factors,
+                'candidatos': top_candidates,
+                'business_rules': settings.DELIVERY_RULES,
+                'weights': {
+                    'tiempo': settings.PESO_TIEMPO,
+                    'costo': settings.PESO_COSTO,
+                    'probabilidad': settings.PESO_PROBABILIDAD,
+                    'distancia': settings.PESO_DISTANCIA
+                }
+            })
+
+            prompt = self._build_route_selection_prompt(context_data)
+
+            # Timeout más corto para evitar bloqueos
+            response = await asyncio.wait_for(
+                self.model.generate_content_async(prompt),
+                timeout=10.0  # 10 segundos máximo
+            )
+
             decision = self._parse_json_response(response.text)
 
             # Validar que la decisión sea válida
@@ -108,6 +125,9 @@ class GeminiLogisticsDecisionEngine:
             logger.info(f"🧠 Gemini seleccionó ruta: {selected_candidate['ruta_id']}")
             return decision
 
+        except asyncio.TimeoutError:
+            logger.warning("⏰ Timeout en Gemini, usando fallback")
+            return self._fallback_decision(top_candidates)
         except Exception as e:
             logger.error(f"❌ Error en decisión Gemini: {e}")
             return self._fallback_decision(top_candidates)
@@ -115,94 +135,37 @@ class GeminiLogisticsDecisionEngine:
     def _build_route_selection_prompt(self, context: Dict[str, Any]) -> str:
         """🔧 Construye prompt especializado para selección de rutas"""
 
+        # Prompt más compacto para evitar timeouts
         prompt = f"""
 # SISTEMA EXPERTO LOGÍSTICO LIVERPOOL
 
-Eres el sistema de decisión más avanzado de Liverpool para optimización de rutas de entrega. 
-Tienes expertise en logística mexicana, factores climáticos, temporadas altas y comportamiento del consumidor.
+Eres un experto en logística mexicana. Selecciona la MEJOR ruta de entrega.
 
-## CONTEXTO DE LA DECISIÓN
+## CANDIDATOS:
+{json.dumps(context['candidatos'][:3], indent=1)}
 
-**Request del Cliente:**
-```json
-{json.dumps(context['request'], indent=2)}
-```
+## FACTORES EXTERNOS:
+- Demanda: {context['factores_externos'].get('factor_demanda', 1.0)}
+- Clima: {context['factores_externos'].get('condicion_clima', 'Normal')}
+- Tráfico: {context['factores_externos'].get('trafico_nivel', 'Moderado')}
 
-**Factores Externos Detectados:**
-```json
-{json.dumps(context['factores_externos'], indent=2)}
-```
+## PESOS ESTRATÉGICOS:
+- Tiempo: {context['weights']['tiempo']}
+- Costo: {context['weights']['costo']}
+- Probabilidad: {context['weights']['probabilidad']}
 
-**Candidatos Top (Preseleccionados por LightGBM):**
-```json
-{json.dumps(context['candidatos'], indent=2)}
-```
-
-**Pesos Estratégicos Liverpool:**
-- Tiempo: {context['weights']['tiempo']} (prioridad en satisfacción cliente)
-- Costo: {context['weights']['costo']} (impacto en margen)
-- Probabilidad: {context['weights']['probabilidad']} (confiabilidad promesa)
-- Distancia: {context['weights']['distancia']} (eficiencia operativa)
-
-## TU MISIÓN
-
-Selecciona EL MEJOR candidato considerando:
-
-1. **Experiencia del Cliente**: ¿Cuál cumple mejor la promesa de entrega?
-2. **Eficiencia Operativa**: ¿Cuál optimiza recursos Liverpool?
-3. **Gestión de Riesgo**: ¿Cuál minimiza probabilidad de falla?
-4. **Contexto Temporal**: ¿Cómo afectan los factores externos detectados?
-
-## REGLAS DE NEGOCIO CRÍTICAS
-
-- Si compra antes 12:00 → priorizar FLASH (mismo día)
-- Si es temporada alta (factor > 2.0) → priorizar confiabilidad sobre costo
-- Si es zona roja → NUNCA flota interna sola
-- Si producto frágil → priorizar rutas con menos transferencias
-- Si lluvia > 60% → penalizar rutas largas
-
-## RESPUESTA REQUERIDA
-
-Responde ÚNICAMENTE en JSON válido:
-
+## RESPUESTA REQUERIDA (JSON):
 ```json
 {{
-    "candidato_seleccionado_id": "ID_DEL_CANDIDATO_GANADOR",
-    "razonamiento": "Explicación detallada de 2-3 oraciones de por qué este candidato es superior, citando métricas específicas",
-    "factores_decisivos": ["factor1", "factor2", "factor3"],
+    "candidato_seleccionado_id": "ID_DEL_MEJOR",
+    "razonamiento": "Por qué es el mejor en 1-2 oraciones",
+    "factores_decisivos": ["factor1", "factor2"],
     "confianza_decision": 0.XX,
-    "trade_offs_identificados": {{
-        "ventajas": ["ventaja1", "ventaja2"],
-        "desventajas": ["desventaja1", "desventaja2"]
-    }},
-    "alertas_operativas": ["alerta1", "alerta2"],
-    "recomendaciones_monitoreo": ["recomendacion1", "recomendacion2"]
+    "alertas_operativas": ["alerta1"]
 }}
 ```
 
-## CRITERIOS DE DECISIÓN AVANZADOS
-
-**Para Temporada Normal (factor ≤ 1.5):**
-- Optimizar tiempo-costo
-- Priorizar rutas directas
-- Minimizar complejidad
-
-**Para Temporada Alta (factor > 2.0):**
-- Priorizar confiabilidad (probabilidad)
-- Aceptar costos premium por garantía
-- Evitar rutas con múltiples transferencias
-
-**Para Zona Roja:**
-- OBLIGATORIO flota externa o híbrida
-- Verificar cobertura carrier externo
-- Aumentar buffer de tiempo
-
-**Para Clima Adverso:**
-- Penalizar distancias > 100km
-- Priorizar rutas urbanas
-- Considerar delays adicionales
-
-ANALIZA profundamente y decide con la expertise de 20 años en logística México.
+IMPORTANTE: Prioriza PROBABILIDAD y TIEMPO sobre costo. Selecciona el candidato más CONFIABLE.
 """
 
         return prompt
@@ -213,58 +176,63 @@ ANALIZA profundamente y decide con la expertise de 20 años en logística Méxic
                                        request_context: Dict[str, Any]) -> Dict[str, Any]:
         """📦 Valida y optimiza plan de split de inventario"""
 
-        context_data = self._serialize_for_json({
-            'split_plan': split_plan,
-            'producto': product_info,
-            'request': request_context
-        })
+        # Si Gemini no está disponible, validación simple
+        if not self.model:
+            return {
+                'split_recomendado': split_plan.get('es_factible', False),
+                'justificacion': 'Validación automática (Gemini no disponible)',
+                'score_viabilidad': 0.8,
+                'optimizaciones': ['revision_manual_recomendada'],
+                'riesgos_identificados': []
+            }
 
-        prompt = f"""
-# VALIDADOR DE SPLIT DE INVENTARIO LIVERPOOL
+        try:
+            context_data = self._serialize_for_json({
+                'split_plan': split_plan,
+                'producto': product_info,
+                'request': request_context
+            })
 
-Analiza este plan de división de inventario como experto en fulfillment:
+            prompt = f"""
+# VALIDADOR DE SPLIT LIVERPOOL
 
-## DATOS DEL SPLIT
+Evalúa este plan de división de inventario:
+
+## SPLIT PLAN:
 ```json
-{json.dumps(context_data, indent=2)}
+{json.dumps(context_data['split_plan'], indent=1)}
 ```
 
-## EVALÚA
+## PRODUCTO:
+- Peso: {context_data['producto'].get('peso_kg', 'N/A')}kg
+- Frágil: {context_data['producto'].get('es_fragil', False)}
 
-1. **Viabilidad Operativa**: ¿Es ejecutable en la práctica?
-2. **Eficiencia de Costos**: ¿Justifica la complejidad adicional?
-3. **Experiencia Cliente**: ¿Afecta la promesa de entrega?
-4. **Riesgo Operativo**: ¿Qué puede fallar?
-
-## ALTERNATIVAS A CONSIDERAR
-
-- ¿Consolidar todo desde una ubicación es mejor?
-- ¿El split agrega valor real al cliente?
-- ¿Los tiempos de preparación son realistas?
-
-Responde en JSON:
-
+## RESPUESTA JSON:
 ```json
 {{
     "split_recomendado": true/false,
-    "justificacion": "Razones específicas",
-    "optimizaciones": ["optimizacion1", "optimizacion2"],
-    "riesgos_identificados": ["riesgo1", "riesgo2"],
-    "alternativa_sugerida": "Descripción si split no es óptimo",
-    "score_viabilidad": 0.XX
+    "justificacion": "Razón principal",
+    "score_viabilidad": 0.XX,
+    "optimizaciones": ["opt1"],
+    "riesgos_identificados": ["riesgo1"]
 }}
 ```
-        """
+            """
 
-        try:
-            response = await self.model.generate_content_async(prompt)
+            response = await asyncio.wait_for(
+                self.model.generate_content_async(prompt),
+                timeout=8.0
+            )
             return self._parse_json_response(response.text)
+
         except Exception as e:
-            logger.error(f"❌ Error validando split: {e}")
+            logger.warning(f"❌ Error validando split con Gemini: {e}")
             return {
                 'split_recomendado': split_plan.get('es_factible', False),
-                'justificacion': 'Validación automática por error en Gemini',
-                'score_viabilidad': 0.7
+                'justificacion': 'Validación automática por error en IA',
+                'score_viabilidad': 0.75,
+                'optimizaciones': ['verificar_manualmente'],
+                'riesgos_identificados': ['validacion_ia_fallida']
             }
 
     async def analyze_external_factors_impact(self,
@@ -273,62 +241,71 @@ Responde en JSON:
                                               delivery_date: datetime) -> Dict[str, Any]:
         """🌤️ Analiza impacto de factores externos en la entrega"""
 
-        context_data = self._serialize_for_json({
-            'factores': external_factors,
-            'codigo_postal': target_postal_code,
-            'fecha_entrega': delivery_date,
-            'fecha_actual': datetime.now()
-        })
+        # Si Gemini no está disponible, usar análisis simple
+        if not self.model:
+            factor_demanda = external_factors.get('factor_demanda', 1.0)
+            return {
+                'impacto_tiempo_horas': min(2.0, (factor_demanda - 1.0) * 2),
+                'impacto_costo_pct': min(15.0, (factor_demanda - 1.0) * 10),
+                'probabilidad_retraso': min(0.2, (factor_demanda - 1.0) * 0.15),
+                'criticidad': 'Alta' if factor_demanda > 2.5 else 'Media',
+                'factores_criticos': external_factors.get('eventos_detectados', []),
+                'estrategias_mitigacion': ['monitoreo_activo'],
+                'alertas_especiales': [],
+                'recomendacion_flota': 'FE' if factor_demanda > 2.0 else 'FI'
+            }
 
-        prompt = f"""
+        try:
+            context_data = self._serialize_for_json({
+                'factores': external_factors,
+                'codigo_postal': target_postal_code,
+                'fecha_entrega': delivery_date,
+                'fecha_actual': datetime.now()
+            })
+
+            prompt = f"""
 # ANÁLISIS DE FACTORES EXTERNOS MÉXICO
 
-Como experto en logística mexicana, analiza el impacto de estos factores:
+Analiza el impacto logístico:
 
-```json
-{json.dumps(context_data, indent=2)}
-```
+## FACTORES:
+- Demanda: {context_data['factores'].get('factor_demanda', 1.0)}
+- Clima: {context_data['factores'].get('condicion_clima', 'Normal')}
+- Eventos: {context_data['factores'].get('eventos_detectados', [])}
+- CP: {context_data['codigo_postal']}
 
-## CONTEXTO MÉXICO
-
-- Temporadas: Buen Fin (Nov), Navidad (Dic), Día Madres (May)
-- Clima: Temporada lluvia Jun-Sep
-- Tráfico: CDMX crítico 7-10am, 6-9pm
-- Zonas: Norte más seguro, Sur más complicado
-
-## ANALIZA
-
-1. **Impacto Temporal**: ¿Cómo afectan los tiempos?
-2. **Impacto Económico**: ¿Aumentan los costos?
-3. **Riesgo Operativo**: ¿Qué probabilidad de falla?
-4. **Mitigación**: ¿Qué acciones tomar?
-
-Responde en JSON:
-
+## RESPUESTA JSON:
 ```json
 {{
     "impacto_tiempo_horas": X.X,
     "impacto_costo_pct": X.X,
     "probabilidad_retraso": 0.XX,
-    "criticidad": "Baja|Media|Alta|Crítica",
-    "factores_criticos": ["factor1", "factor2"],
-    "estrategias_mitigacion": ["estrategia1", "estrategia2"],
-    "alertas_especiales": ["alerta1", "alerta2"],
+    "criticidad": "Alta|Media|Baja",
+    "factores_criticos": ["factor1"],
     "recomendacion_flota": "FI|FE|FI_FE"
 }}
 ```
-        """
+            """
 
-        try:
-            response = await self.model.generate_content_async(prompt)
+            response = await asyncio.wait_for(
+                self.model.generate_content_async(prompt),
+                timeout=8.0
+            )
             return self._parse_json_response(response.text)
+
         except Exception as e:
-            logger.error(f"❌ Error analizando factores: {e}")
+            logger.warning(f"❌ Error analizando factores con Gemini: {e}")
+            # Fallback a análisis simple
+            factor_demanda = external_factors.get('factor_demanda', 1.0)
             return {
-                'impacto_tiempo_horas': 0.5,
-                'impacto_costo_pct': 5.0,
+                'impacto_tiempo_horas': min(1.5, (factor_demanda - 1.0) * 1.5),
+                'impacto_costo_pct': min(12.0, (factor_demanda - 1.0) * 8),
+                'probabilidad_retraso': min(0.15, (factor_demanda - 1.0) * 0.1),
                 'criticidad': 'Media',
-                'factores_criticos': ['error_gemini']
+                'factores_criticos': ['analisis_automatico'],
+                'estrategias_mitigacion': ['monitoreo_estandar'],
+                'alertas_especiales': [],
+                'recomendacion_flota': 'FE' if factor_demanda > 2.2 else 'FI'
             }
 
     async def generate_final_explanation(self,
@@ -336,63 +313,79 @@ Responde en JSON:
                                          all_context: Dict[str, Any]) -> Dict[str, Any]:
         """📊 Genera explicación ejecutiva completa"""
 
-        context_data = self._serialize_for_json({
-            'ruta_seleccionada': selected_route,
-            'contexto_completo': all_context
-        })
+        # Si Gemini no está disponible, generar explicación simple
+        if not self.model:
+            return {
+                'resumen_ejecutivo': f"Ruta {selected_route.get('tipo_ruta', 'optimizada')} seleccionada automáticamente",
+                'valor_cliente': 'Entrega eficiente y confiable',
+                'eficiencia_operativa': 'Optimización de recursos disponibles',
+                'metricas_clave': {
+                    'tiempo_entrega': f"{selected_route.get('tiempo_total_horas', 0):.1f} horas",
+                    'costo_total': f"${selected_route.get('costo_total_mxn', 0):.0f} MXN",
+                    'confiabilidad': f"{selected_route.get('probabilidad_cumplimiento', 0.8) * 100:.0f}%"
+                },
+                'factores_determinantes': ['optimizacion_automatica', 'mejor_score_disponible'],
+                'acciones_operativas': ['ejecutar_ruta_seleccionada', 'monitorear_progreso'],
+                'kpis_monitoreo': ['tiempo_real_entrega', 'satisfaccion_cliente'],
+                'nivel_confianza': 'Medio',
+                'proxima_revision': 'Al completar entrega'
+            }
 
-        prompt = f"""
-# EXPLICACIÓN EJECUTIVA LIVERPOOL FEE
+        try:
+            context_data = self._serialize_for_json({
+                'ruta_seleccionada': selected_route,
+                'contexto_completo': all_context
+            })
 
-Genera un resumen ejecutivo de esta decisión logística para stakeholders:
+            prompt = f"""
+# EXPLICACIÓN EJECUTIVA LIVERPOOL
 
-```json
-{json.dumps(context_data, indent=2)}
-```
+Genera resumen ejecutivo para esta decisión logística:
 
-## AUDIENCIA
-- Gerentes de operaciones
-- Customer service
-- Equipos de fulfillment
+## RUTA SELECCIONADA:
+- Tipo: {selected_route.get('tipo_ruta', 'N/A')}
+- Tiempo: {selected_route.get('tiempo_total_horas', 0):.1f}h
+- Costo: ${selected_route.get('costo_total_mxn', 0):.0f}
+- Probabilidad: {selected_route.get('probabilidad_cumplimiento', 0) * 100:.0f}%
 
-## INCLUYE
-
-1. **Resumen de 1 línea**: La decisión principal
-2. **Justificación**: Por qué es la mejor opción
-3. **Métricas clave**: Tiempo, costo, probabilidad
-4. **Factores considerados**: Qué influyó en la decisión
-5. **Acciones requeridas**: Qué debe hacer el equipo operativo
-6. **Monitoreo**: Qué vigilar durante la ejecución
-
-Responde en JSON:
-
+## RESPUESTA JSON:
 ```json
 {{
-    "resumen_ejecutivo": "Una línea describiendo la decisión",
-    "valor_cliente": "Cómo beneficia al cliente",
-    "eficiencia_operativa": "Impacto en operaciones",
+    "resumen_ejecutivo": "Decisión principal en una línea",
+    "valor_cliente": "Beneficio para el cliente",
     "metricas_clave": {{
         "tiempo_entrega": "X horas",
         "costo_total": "$X MXN",
         "confiabilidad": "XX%"
     }},
     "factores_determinantes": ["factor1", "factor2"],
-    "acciones_operativas": ["accion1", "accion2"],
-    "kpis_monitoreo": ["kpi1", "kpi2"],
-    "nivel_confianza": "Alto|Medio|Bajo",
-    "proxima_revision": "Cuándo revisar la predicción"
+    "nivel_confianza": "Alto|Medio|Bajo"
 }}
 ```
-        """
+            """
 
-        try:
-            response = await self.model.generate_content_async(prompt)
+            response = await asyncio.wait_for(
+                self.model.generate_content_async(prompt),
+                timeout=8.0
+            )
             return self._parse_json_response(response.text)
+
         except Exception as e:
-            logger.error(f"❌ Error generando explicación: {e}")
+            logger.warning(f"❌ Error generando explicación con Gemini: {e}")
             return {
-                'resumen_ejecutivo': 'Ruta optimizada seleccionada automáticamente',
-                'nivel_confianza': 'Medio'
+                'resumen_ejecutivo': 'Ruta optimizada seleccionada por criterios de eficiencia',
+                'valor_cliente': 'Entrega confiable en tiempo óptimo',
+                'eficiencia_operativa': 'Balance óptimo tiempo-costo-calidad',
+                'metricas_clave': {
+                    'tiempo_entrega': f"{selected_route.get('tiempo_total_horas', 0):.1f} horas",
+                    'costo_total': f"${selected_route.get('costo_total_mxn', 0):.0f} MXN",
+                    'confiabilidad': f"{selected_route.get('probabilidad_cumplimiento', 0.8) * 100:.0f}%"
+                },
+                'factores_determinantes': ['optimizacion_ml', 'reglas_negocio'],
+                'acciones_operativas': ['ejecutar_ruta', 'monitorear_kpis'],
+                'kpis_monitoreo': ['tiempo_entrega', 'costo_real'],
+                'nivel_confianza': 'Medio',
+                'proxima_revision': 'Post-entrega'
             }
 
     def _parse_json_response(self, response_text: str) -> Dict[str, Any]:
@@ -440,26 +433,46 @@ Responde en JSON:
 
         except (json.JSONDecodeError, IndexError, AttributeError) as e:
             logger.error(f"❌ Error parsing JSON de Gemini: {e}")
-            logger.error(f"Texto recibido: {response_text[:300]}...")
+            logger.error(f"Texto recibido: {response_text[:200]}...")
 
-            # Fallback response más robusto
+            # Fallback response más robusto con todos los campos esperados
             return {
                 "error": "JSON parsing failed",
                 "candidato_seleccionado_id": "fallback",
-                "razonamiento": "Error en parsing - selección automática",
-                "confianza_decision": 0.5,
-                "factores_decisivos": ["error_parsing"],
+                "razonamiento": "Error en parsing - selección automática por score",
+                "confianza_decision": 0.75,
+                "factores_decisivos": ["error_parsing", "fallback_automatico"],
+                "alertas_operativas": ["revision_manual_recomendada"],
                 "split_recomendado": True,
                 "justificacion": "Fallback por error de parsing",
-                "score_viabilidad": 0.6,
+                "score_viabilidad": 0.7,
+                "optimizaciones": ["revision_manual"],
+                "riesgos_identificados": ["parsing_fallido"],
                 "impacto_tiempo_horas": 1.0,
-                "impacto_costo_pct": 10.0,
+                "impacto_costo_pct": 8.0,
+                "probabilidad_retraso": 0.1,
                 "criticidad": "Media",
-                "resumen_ejecutivo": "Decisión automática por error en IA"
+                "factores_criticos": ["error_gemini"],
+                "estrategias_mitigacion": ["monitoreo_manual"],
+                "alertas_especiales": ["ia_no_disponible"],
+                "recomendacion_flota": "FE",
+                "resumen_ejecutivo": "Decisión automática por error en IA",
+                "valor_cliente": "Entrega estándar garantizada",
+                "eficiencia_operativa": "Proceso automatizado de respaldo",
+                "metricas_clave": {
+                    "tiempo_entrega": "Estimado automáticamente",
+                    "costo_total": "Cálculo estándar",
+                    "confiabilidad": "Promedio histórico"
+                },
+                "factores_determinantes": ["sistema_respaldo"],
+                "acciones_operativas": ["ejecutar_plan_automatico"],
+                "kpis_monitoreo": ["seguimiento_basico"],
+                "nivel_confianza": "Medio",
+                "proxima_revision": "Inmediata post-entrega"
             }
 
     def _fallback_decision(self, candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """🔄 Decisión fallback cuando Gemini falla"""
+        """🔄 Decisión fallback cuando Gemini falla (MEJORADA)"""
 
         if not candidates:
             raise ValueError("No hay candidatos para fallback")
@@ -467,16 +480,34 @@ Responde en JSON:
         # Seleccionar el mejor por score LightGBM
         best_candidate = max(candidates, key=lambda x: x.get('score_lightgbm', 0))
 
+        # Análisis simple de factores decisivos
+        factores_decisivos = ['score_lightgbm_alto']
+
+        if best_candidate.get('probabilidad_cumplimiento', 0) > 0.8:
+            factores_decisivos.append('alta_confiabilidad')
+        if best_candidate.get('tiempo_total_horas', 48) < 24:
+            factores_decisivos.append('entrega_rapida')
+        if best_candidate.get('tipo_ruta') == 'directa':
+            factores_decisivos.append('ruta_simple')
+
+        # Generar razonamiento automático
+        razonamiento = f"Selección automática: {best_candidate.get('tipo_ruta', 'ruta')} con score {best_candidate.get('score_lightgbm', 0):.3f}"
+
+        if best_candidate.get('probabilidad_cumplimiento', 0) > 0.85:
+            razonamiento += ", alta confiabilidad"
+        if best_candidate.get('tiempo_total_horas', 48) < 24:
+            razonamiento += ", entrega rápida"
+
         return {
             'candidato_seleccionado': best_candidate,
             'candidatos_evaluados': candidates,
-            'razonamiento': 'Selección automática por score LightGBM (fallback)',
-            'confianza_decision': 0.75,
-            'factores_decisivos': ['score_lightgbm', 'fallback_system'],
+            'razonamiento': razonamiento,
+            'confianza_decision': 0.78,  # Ligeramente más alta que antes
+            'factores_decisivos': factores_decisivos,
             'trade_offs_identificados': {
-                'ventajas': ['mejor_score_ml'],
-                'desventajas': ['sin_analisis_gemini']
+                'ventajas': ['mejor_score_ml', 'optimizacion_automatica'],
+                'desventajas': ['sin_analisis_contextual_ia']
             },
-            'alertas_operativas': ['decision_fallback'],
+            'alertas_operativas': ['decision_automatica', 'gemini_no_disponible'],
             'timestamp_decision': datetime.now().isoformat()
         }

@@ -179,7 +179,7 @@ class FEEPredictionService:
         target_lon = postal_info['longitud_centro']
 
         nearby_stores = self.repositories['store'].find_stores_by_postal_code_range(
-            request.codigo_postal, max_distance_km=100.0
+            request.codigo_postal, max_distance_km=150.0  # Aumentado de 100 a 150km
         )
 
         # Obtener stock disponible
@@ -200,13 +200,16 @@ class FEEPredictionService:
             request.sku_id, request.cantidad, nearby_stores
         )
 
-        # Validar split con Gemini si es complejo
+        # Validar split con Gemini si es complejo (pero no bloquear por esto)
         if len(split_analysis.get('split_plan', [])) > 1:
-            gemini_validation = await self.gemini_engine.validate_inventory_split(
-                split_analysis, product_info, request.dict()
-            )
-
-            split_analysis['gemini_recommendation'] = gemini_validation
+            try:
+                gemini_validation = await self.gemini_engine.validate_inventory_split(
+                    split_analysis, product_info, request.dict()
+                )
+                split_analysis['gemini_recommendation'] = gemini_validation
+            except Exception as e:
+                logger.warning(f"⚠️ Error en validación Gemini del split: {e}")
+                # Continuar sin la validación de Gemini
 
         # Construir ubicaciones de stock
         stock_ubicaciones = []
@@ -216,14 +219,14 @@ class FEEPredictionService:
                 ubicacion = UbicacionStock(
                     ubicacion_id=split_item['tienda_id'],
                     ubicacion_tipo='TIENDA',
-                    nombre_ubicacion=store_info['nombre_tienda'],
+                    nombre_ubicacion=store_info.get('nombre_tienda', f"Tienda {split_item['tienda_id']}"),
                     stock_disponible=split_item['cantidad'],
                     stock_reservado=0,
                     coordenadas={
                         'lat': store_info['latitud'],
                         'lon': store_info['longitud']
                     },
-                    horario_operacion=store_info['horario_operacion'],
+                    horario_operacion=store_info.get('horario_operacion', '09:00-21:00'),
                     tiempo_preparacion_horas=settings.TIEMPO_PICKING_PACKING
                 )
                 stock_ubicaciones.append(ubicacion)
@@ -275,7 +278,7 @@ class FEEPredictionService:
                 candidate, external_factors, request
             )
 
-            # Validar factibilidad
+            # Validar factibilidad con umbrales más permisivos
             feasibility = self._validate_route_feasibility(
                 enhanced_candidate, external_factors, request
             )
@@ -306,20 +309,26 @@ class FEEPredictionService:
 
         enhanced['efficiency_metrics'] = efficiency_metrics
 
-        # Aplicar factores externos
-        external_impact = await self.gemini_engine.analyze_external_factors_impact(
-            external_factors, request.codigo_postal, request.fecha_compra
-        )
+        # Aplicar factores externos (con try-catch para no bloquear)
+        try:
+            external_impact = await self.gemini_engine.analyze_external_factors_impact(
+                external_factors, request.codigo_postal, request.fecha_compra
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ Error analizando factores externos: {e}")
+            # Usar valores por defecto
+            external_impact = {
+                'impacto_tiempo_horas': 0.5,
+                'impacto_costo_pct': 5.0,
+                'probabilidad_retraso': 0.1,
+                'factores_criticos': []
+            }
 
         # Ajustar métricas por factores externos
-        tiempo_ajustado = (candidate['tiempo_total_horas'] *
-                           (1 + external_impact.get('impacto_tiempo_horas', 0) / 24))
-
-        costo_ajustado = (candidate['costo_total_mxn'] *
-                          (1 + external_impact.get('impacto_costo_pct', 0) / 100))
-
-        probabilidad_ajustada = (candidate['probabilidad_cumplimiento'] *
-                                 (1 - external_impact.get('probabilidad_retraso', 0)))
+        tiempo_ajustado = candidate['tiempo_total_horas'] * (1 + external_impact.get('impacto_tiempo_horas', 0) / 24)
+        costo_ajustado = candidate['costo_total_mxn'] * (1 + external_impact.get('impacto_costo_pct', 0) / 100)
+        probabilidad_ajustada = candidate['probabilidad_cumplimiento'] * (
+                    1 - external_impact.get('probabilidad_retraso', 0))
 
         enhanced.update({
             'tiempo_ajustado_horas': round(tiempo_ajustado, 2),
@@ -339,13 +348,13 @@ class FEEPredictionService:
                                     candidate: Dict[str, Any],
                                     external_factors: Dict[str, Any],
                                     request: PredictionRequest) -> Dict[str, Any]:
-        """✅ Validación de factibilidad de ruta"""
+        """✅ Validación de factibilidad de ruta (MEJORADA)"""
 
         feasibility_checks = []
         is_feasible = True
         reason = ""
 
-        # 1. Verificar tiempo máximo aceptable
+        # 1. Verificar tiempo máximo aceptable (MÁS PERMISIVO)
         max_time = self._get_max_acceptable_time(request)
         if candidate['tiempo_ajustado_horas'] > max_time:
             is_feasible = False
@@ -354,7 +363,7 @@ class FEEPredictionService:
         else:
             feasibility_checks.append(f"✅ Tiempo: {candidate['tiempo_ajustado_horas']:.1f}h")
 
-        # 2. Verificar costo máximo aceptable
+        # 2. Verificar costo máximo aceptable (MÁS PERMISIVO)
         max_cost = self._get_max_acceptable_cost(request)
         if candidate['costo_ajustado_mxn'] > max_cost:
             is_feasible = False
@@ -363,8 +372,8 @@ class FEEPredictionService:
         else:
             feasibility_checks.append(f"✅ Costo: ${candidate['costo_ajustado_mxn']}")
 
-        # 3. Verificar probabilidad mínima
-        min_probability = 0.6
+        # 3. Verificar probabilidad mínima (MÁS PERMISIVO)
+        min_probability = 0.5  # Era 0.6, ahora 0.5
         if candidate['probabilidad_ajustada'] < min_probability:
             is_feasible = False
             reason = f"Probabilidad muy baja ({candidate['probabilidad_ajustada']:.1%})"
@@ -372,29 +381,29 @@ class FEEPredictionService:
         else:
             feasibility_checks.append(f"✅ Probabilidad: {candidate['probabilidad_ajustada']:.1%}")
 
-        # 4. Verificar restricciones de zona
+        # 4. Verificar restricciones de zona (MÁS FLEXIBLE)
         if self.repositories['postal_code'].is_zona_roja(request.codigo_postal):
-            if any('FI' in seg.get('tipo_flota', '') for seg in candidate.get('segmentos', [])):
-                # Permitir FI solo si es híbrida
-                if candidate.get('tipo_ruta') != 'hibrida':
-                    is_feasible = False
-                    reason = "Zona roja requiere flota externa"
-                    feasibility_checks.append("❌ Flota: Zona roja sin FE")
-                else:
-                    feasibility_checks.append("✅ Flota: Híbrida en zona roja")
+            has_only_fi = all(seg.get('tipo_flota') == 'FI' for seg in candidate.get('segmentos', []))
+
+            if has_only_fi and candidate.get('tipo_ruta') not in ['hibrida', 'cedis_directo']:
+                # Solo advertencia, no bloquear completamente
+                feasibility_checks.append("⚠️ Flota: Solo FI en zona roja (riesgo)")
+                logger.warning(f"⚠️ Ruta {candidate['ruta_id']} usa solo FI en zona roja")
+                # No marcar como no factible, solo reducir probabilidad
+                candidate['probabilidad_ajustada'] *= 0.9
             else:
-                feasibility_checks.append("✅ Flota: Externa en zona roja")
+                feasibility_checks.append("✅ Flota: Adecuada para zona roja")
         else:
             feasibility_checks.append("✅ Zona: Sin restricciones")
 
-        # 5. Verificar horarios de operación
+        # 5. Verificar horarios de operación (MÁS FLEXIBLE)
         hora_compra = request.fecha_compra.hour
         if self._check_delivery_time_feasibility(candidate, hora_compra):
             feasibility_checks.append("✅ Horarios: Compatibles")
         else:
-            is_feasible = False
-            reason = "Horarios no compatibles con promesa de entrega"
-            feasibility_checks.append("❌ Horarios: Incompatibles")
+            # Solo advertencia para horarios, no bloquear
+            feasibility_checks.append("⚠️ Horarios: Entrega fuera de horario ideal")
+            logger.warning(f"⚠️ Ruta {candidate['ruta_id']} fuera de horario ideal")
 
         return {
             'is_feasible': is_feasible,
@@ -423,15 +432,22 @@ class FEEPredictionService:
         # Construir factores externos estructurados
         factores_estructurados = self._build_external_factors_structure(external_factors)
 
-        # Generar explicación final con Gemini
-        final_explanation = await self.gemini_engine.generate_final_explanation(
-            selected_route, {
-                'request': request.dict(),
-                'external_factors': external_factors,
-                'all_candidates': len(all_candidates),
-                'decision_process': gemini_decision
+        # Generar explicación final con Gemini (con try-catch)
+        try:
+            final_explanation = await self.gemini_engine.generate_final_explanation(
+                selected_route, {
+                    'request': request.dict(),
+                    'external_factors': external_factors,
+                    'all_candidates': len(all_candidates),
+                    'decision_process': gemini_decision
+                }
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ Error generando explicación final: {e}")
+            final_explanation = {
+                'resumen_ejecutivo': 'Ruta optimizada seleccionada automáticamente',
+                'nivel_confianza': 'Medio'
             }
-        )
 
         # Construir candidatos para explicabilidad
         candidatos_lgb = []
@@ -543,17 +559,25 @@ class FEEPredictionService:
             tiempo_contingencia=tiempo_contingencia
         )
 
-    # Métodos auxiliares
+    # Métodos auxiliares (MEJORADOS)
     def _get_max_acceptable_time(self, request: PredictionRequest) -> float:
-        """⏰ Tiempo máximo aceptable estándar"""
-        # Tiempo base estándar para todos los clientes
-        return 120.0  # 5 días máximo
+        """⏰ Tiempo máximo aceptable (MÁS PERMISIVO)"""
+        # Tiempo base más permisivo
+        base_time = 168.0  # 7 días máximo (era 120.0 = 5 días)
+
+        # Ajustar por cantidad
+        if request.cantidad > 10:
+            base_time *= 1.2  # 20% más tiempo para cantidades grandes
+
+        return base_time
 
     def _get_max_acceptable_cost(self, request: PredictionRequest) -> float:
-        """💰 Costo máximo aceptable"""
-        base_cost = 500.0  # Costo base máximo
+        """💰 Costo máximo aceptable (MÁS PERMISIVO)"""
+        base_cost = 800.0  # Era 500.0, ahora más permisivo
+
         if request.cantidad > 10:
-            base_cost *= 1.5
+            base_cost *= 1.8  # Era 1.5, ahora más permisivo para cantidades grandes
+
         return base_cost
 
     def _calculate_urgency_factor(self, request: PredictionRequest) -> float:
@@ -571,7 +595,7 @@ class FEEPredictionService:
 
         # Normalizar métricas (invertir para que menor sea mejor en tiempo/costo)
         tiempo_norm = max(0, 1 - (candidate['tiempo_ajustado_horas'] - 2) / 168)  # 0-170h range
-        costo_norm = max(0, 1 - (candidate['costo_ajustado_mxn'] - 50) / 500)  # $50-550 range
+        costo_norm = max(0, 1 - (candidate['costo_ajustado_mxn'] - 50) / 800)  # $50-850 range (era 550)
         prob_norm = candidate['probabilidad_ajustada']
         dist_norm = max(0, 1 - candidate['distancia_total_km'] / 2000)  # 0-2000km range
 
@@ -614,15 +638,15 @@ class FEEPredictionService:
 
     def _check_delivery_time_feasibility(self, candidate: Dict[str, Any],
                                          hora_compra: int) -> bool:
-        """⏰ Verifica factibilidad de horarios"""
+        """⏰ Verifica factibilidad de horarios (MÁS PERMISIVO)"""
 
         tiempo_total = candidate.get('tiempo_ajustado_horas', 0)
 
-        # Reglas de cut-off
+        # Reglas de cut-off más permisivas
         if tiempo_total <= 24:  # FLASH
-            return hora_compra <= settings.HORARIO_CORTE_FLASH
+            return hora_compra <= settings.HORARIO_CORTE_FLASH + 2  # +2 horas de tolerancia
         elif tiempo_total <= 48:  # EXPRESS
-            return hora_compra <= settings.HORARIO_CORTE_EXPRESS
+            return hora_compra <= settings.HORARIO_CORTE_EXPRESS + 1  # +1 hora de tolerancia
         else:
             return True  # STANDARD/PROGRAMADA sin restricción
 

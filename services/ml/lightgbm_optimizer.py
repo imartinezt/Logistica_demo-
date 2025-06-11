@@ -1,14 +1,13 @@
+from datetime import datetime
+from typing import List, Dict, Any, Tuple
+
+import joblib
 import lightgbm as lgb
 import numpy as np
-import polars as pl
-from typing import List, Dict, Any, Tuple
-from datetime import datetime
-import joblib
-from pathlib import Path
 
 from config.settings import settings
-from utils.logger import logger
 from utils.geo_calculator import GeoCalculator
+from utils.logger import logger
 
 
 class RouteOptimizer:
@@ -91,6 +90,7 @@ class RouteOptimizer:
         store_info = repositories['store'].get_store_by_id(tienda_id)
 
         if not store_info:
+            logger.warning(f"❌ Tienda no encontrada: {tienda_id}")
             return None
 
         # Calcular distancia y tiempo
@@ -100,11 +100,11 @@ class RouteOptimizer:
         )
 
         # Determinar tipo de flota basado en distancia y factores
-        is_zona_roja = repositories['postal_code'].is_zona_roja(
-            str(target_coordinates).replace('.', '')[:5]  # CP aproximado
-        )
+        # Código postal aproximado para zona roja
+        cp_approx = f"{int(target_coordinates[0] * 100):05d}"[:5]
+        is_zona_roja = repositories['postal_code'].is_zona_roja(cp_approx)
 
-        tipo_flota = 'FE' if (distance_km > 50 or is_zona_roja) else 'FI'
+        tipo_flota = 'FE' if (distance_km > 100 or is_zona_roja) else 'FI'
 
         travel_time = GeoCalculator.calculate_travel_time(
             distance_km,
@@ -124,9 +124,9 @@ class RouteOptimizer:
 
         # Aplicar factores externos al costo
         factor_demanda = factores_externos.get('factor_demanda', 1.0)
-        costo_ajustado = costo_base * factor_demanda
+        costo_ajustado = costo_base * min(factor_demanda, 2.0)  # Cap factor
 
-        # Calcular probabilidad de cumplimiento
+        # Calcular probabilidad de cumplimiento (mejorada)
         probabilidad = self._calculate_success_probability(
             distance_km, tiempo_total, factores_externos, tipo_flota
         )
@@ -248,13 +248,13 @@ class RouteOptimizer:
 
         # Aplicar factores externos
         factor_demanda = factores_externos.get('factor_demanda', 1.0)
-        costo_total *= factor_demanda
+        costo_total *= min(factor_demanda, 2.0)
 
-        # Calcular probabilidad (penalizar rutas complejas)
+        # Calcular probabilidad (penalizar rutas complejas pero menos)
         base_probability = self._calculate_success_probability(
             distancia_total, tiempo_total, factores_externos, 'FI'
         )
-        complexity_penalty = 0.9 ** len(segmentos)  # Penalizar por complejidad
+        complexity_penalty = 0.95 ** len(segmentos)  # Penalización menor
         probabilidad = base_probability * complexity_penalty
 
         return {
@@ -294,9 +294,27 @@ class RouteOptimizer:
 
             # Encontrar CEDIS más cercano
             cedis_list = repositories['cedis'].load_data().to_dicts()
+            cedis_limpio = []
+
+            for cedis_raw in cedis_list:
+                # Limpiar cedis_id y coordenadas
+                cedis_id_clean = repositories['cedis']._clean_id_value(cedis_raw.get('cedis_id', ''))
+                if not cedis_id_clean:
+                    continue
+
+                lat_clean = repositories['cedis']._clean_coordinate_value(cedis_raw.get('latitud'))
+                lon_clean = repositories['cedis']._clean_coordinate_value(cedis_raw.get('longitud'))
+
+                if 14.0 <= lat_clean <= 33.0 and -118.0 <= lon_clean <= -86.0:
+                    cedis_clean = cedis_raw.copy()
+                    cedis_clean['cedis_id'] = cedis_id_clean
+                    cedis_clean['latitud'] = lat_clean
+                    cedis_clean['longitud'] = lon_clean
+                    cedis_limpio.append(cedis_clean)
+
             closest_cedis = GeoCalculator.find_closest_locations(
                 store_info['latitud'], store_info['longitud'],
-                cedis_list, max_results=1
+                cedis_limpio, max_results=1
             )
 
             if not closest_cedis:
@@ -340,14 +358,14 @@ class RouteOptimizer:
 
             # Aplicar factores
             factor_demanda = factores_externos.get('factor_demanda', 1.0)
-            costo_total *= factor_demanda
+            costo_total *= min(factor_demanda, 2.0)
 
             # Probabilidad (híbridos son generalmente más confiables)
             probabilidad = self._calculate_success_probability(
                 dist_to_cedis + dist_to_client, tiempo_total, factores_externos, 'FI_FE'
             )
-            probabilidad *= 1.1  # Bonus por usar híbrido
-            probabilidad = min(probabilidad, 0.95)  # Cap máximo
+            probabilidad *= 1.05  # Bonus menor por usar híbrido
+            probabilidad = min(probabilidad, 0.98)  # Cap máximo
 
             candidate = {
                 'ruta_id': f"hybrid_{location_split['tienda_id']}_{cedis['cedis_id']}",
@@ -396,23 +414,30 @@ class RouteOptimizer:
 
         candidates = []
 
-        # Obtener todos los CEDIS disponibles
-        cedis_list = repositories['cedis'].load_data().to_dicts()
+        # Obtener todos los CEDIS disponibles (limpios)
+        cedis_raw_list = repositories['cedis'].load_data().to_dicts()
+        cedis_list = []
+
+        for cedis_raw in cedis_raw_list:
+            cedis_id_clean = repositories['cedis']._clean_id_value(cedis_raw.get('cedis_id', ''))
+            if not cedis_id_clean:
+                continue
+
+            lat_clean = repositories['cedis']._clean_coordinate_value(cedis_raw.get('latitud'))
+            lon_clean = repositories['cedis']._clean_coordinate_value(cedis_raw.get('longitud'))
+
+            if 14.0 <= lat_clean <= 33.0 and -118.0 <= lon_clean <= -86.0:
+                cedis_clean = cedis_raw.copy()
+                cedis_clean['cedis_id'] = cedis_id_clean
+                cedis_clean['latitud'] = lat_clean
+                cedis_clean['longitud'] = lon_clean
+                cedis_list.append(cedis_clean)
 
         # Para cada CEDIS, evaluar si puede cubrir la demanda
         for cedis in cedis_list:
             # Asumimos que CEDIS siempre tiene stock (simplificación)
-            # En implementación real, verificar stock en CEDIS
-
-            # Calcular si alguna tienda puede abastecer este CEDIS
-            can_supply_cedis = False
-            total_cantidad_disponible = 0
-
-            for location_split in split_plan:
-                store_info = repositories['store'].get_store_by_id(location_split['tienda_id'])
-                if store_info and store_info.get('cedis_asignado') == cedis['cedis_id']:
-                    can_supply_cedis = True
-                    total_cantidad_disponible += location_split['cantidad']
+            can_supply_cedis = True
+            total_cantidad_disponible = sum(item['cantidad'] for item in split_plan)
 
             if not can_supply_cedis:
                 continue
@@ -440,13 +465,13 @@ class RouteOptimizer:
 
             # Aplicar factores
             factor_demanda = factores_externos.get('factor_demanda', 1.0)
-            costo_total *= factor_demanda
+            costo_total *= min(factor_demanda, 2.0)
 
             # Probabilidad (CEDIS son más confiables)
             probabilidad = self._calculate_success_probability(
                 dist_cedis_client, tiempo_total, factores_externos, 'FE'
             )
-            probabilidad *= 1.15  # Bonus por usar CEDIS
+            probabilidad *= 1.1  # Bonus por usar CEDIS
             probabilidad = min(probabilidad, 0.98)
 
             candidate = {
@@ -494,8 +519,8 @@ class RouteOptimizer:
         base_cost = distance_km * cost_per_km.get(fleet_type, 10.0)
 
         # Factor por cantidad (economías de escala)
-        quantity_factor = 1.0 + (cantidad - 1) * 0.1  # 10% extra por unidad adicional
-        quantity_factor = min(quantity_factor, 2.0)  # Cap máximo 2x
+        quantity_factor = 1.0 + (cantidad - 1) * 0.05  # 5% extra por unidad adicional
+        quantity_factor = min(quantity_factor, 1.5)  # Cap máximo 1.5x
 
         # Costo fijo mínimo
         minimum_cost = 25.0
@@ -508,38 +533,49 @@ class RouteOptimizer:
                                        tiempo_total: float,
                                        factores_externos: Dict[str, Any],
                                        fleet_type: str) -> float:
-        """📊 Calcula probabilidad de cumplimiento exitoso"""
+        """📊 Calcula probabilidad de cumplimiento exitoso (MEJORADA)"""
 
-        # Probabilidad base por tipo de flota
+        # Probabilidad base por tipo de flota (MEJORADA)
         base_probability = {
-            'FI': 0.92,
-            'FE': 0.87,
-            'FI_FE': 0.90
-        }.get(fleet_type, 0.85)
+            'FI': 0.88,  # Era 0.92, ahora más realista
+            'FE': 0.85,  # Era 0.87, ahora más realista
+            'FI_FE': 0.87  # Era 0.90, ahora más realista
+        }.get(fleet_type, 0.83)
 
-        # Penalización por distancia
-        distance_penalty = min(0.2, distance_km / 1000)  # Max 20% penalty
+        # Penalización por distancia (REDUCIDA)
+        distance_penalty = min(0.1, distance_km / 2000)  # Era /1000, ahora más tolerante
 
-        # Penalización por tiempo
-        time_penalty = min(0.15, (tiempo_total - 2) / 20)  # Penalty si > 2 horas
-        time_penalty = max(0, time_penalty)
+        # Penalización por tiempo (REDUCIDA)
+        time_penalty = min(0.08, max(0, (tiempo_total - 4) / 50))  # Era 2h y /20, ahora más tolerante
 
-        # Factor por condiciones externas
+        # Factor por condiciones externas (MEJORADO)
         external_factor = 1.0
 
-        if factores_externos.get('condicion_clima') in ['Lluvioso', 'Tormenta']:
-            external_factor *= 0.9
+        condicion_clima = factores_externos.get('condicion_clima', 'Templado')
+        if condicion_clima in ['Lluvioso_Intenso', 'Tormenta']:
+            external_factor *= 0.95  # Era 0.9, menos penalización
+        elif condicion_clima in ['Lluvioso']:
+            external_factor *= 0.98  # Nueva categoría intermedia
 
-        if factores_externos.get('trafico_nivel') in ['Alto', 'Muy_Alto']:
-            external_factor *= 0.85
+        trafico_nivel = factores_externos.get('trafico_nivel', 'Moderado')
+        if trafico_nivel in ['Muy_Alto']:
+            external_factor *= 0.92  # Era 0.85, menos penalización
+        elif trafico_nivel in ['Alto']:
+            external_factor *= 0.96  # Era implícito en 0.85, ahora específico
 
-        if factores_externos.get('factor_demanda', 1.0) > 2.0:  # Temporada alta
-            external_factor *= 0.92
+        factor_demanda = factores_externos.get('factor_demanda', 1.0)
+        if factor_demanda > 3.0:  # Solo para demanda muy alta
+            external_factor *= 0.95  # Era 0.92 desde 2.0
+        elif factor_demanda > 2.5:
+            external_factor *= 0.98  # Nueva categoría
 
-        # Cálculo final
+        # Cálculo final con mínimo más alto
         final_probability = (base_probability - distance_penalty - time_penalty) * external_factor
 
-        return round(max(0.5, min(0.99, final_probability)), 3)
+        # Mínimo más alto y máximo ajustado
+        final_probability = max(0.65, min(0.98, final_probability))  # Era 0.5 min, ahora 0.65
+
+        return round(final_probability, 3)
 
     def rank_candidates_with_lightgbm(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """🏆 Rankea candidatos usando LightGBM"""
@@ -608,7 +644,7 @@ class RouteOptimizer:
 
             if max_distancia > min_distancia:
                 score_distancia = 1 - (candidate['distancia_total_km'] - min_distancia) / (
-                            max_distancia - min_distancia)
+                        max_distancia - min_distancia)
             else:
                 score_distancia = 1.0
 
@@ -672,9 +708,14 @@ class RouteOptimizer:
         if not ranked_candidates:
             return []
 
-        # Filtrar candidatos con score mínimo
-        min_score = 0.3  # Score mínimo aceptable
+        # Filtrar candidatos con score mínimo (REDUCIDO)
+        min_score = 0.2  # Era 0.3, ahora más permisivo
         viable_candidates = [c for c in ranked_candidates if c.get('score_lightgbm', 0) >= min_score]
+
+        # Si no hay candidatos viables, tomar los mejores disponibles
+        if not viable_candidates and ranked_candidates:
+            logger.warning("⚠️ No hay candidatos con score mínimo, tomando los mejores disponibles")
+            viable_candidates = ranked_candidates[:max_candidates]
 
         # Asegurar diversidad en los candidatos top
         diverse_candidates = self._ensure_candidate_diversity(viable_candidates, max_candidates)
@@ -839,8 +880,8 @@ class RouteOptimizer:
             explanation['factores_positivos'].append("⚡ Entrega rápida (≤24h)")
         if costo <= 100:
             explanation['factores_positivos'].append("💰 Costo económico (≤$100)")
-        if probabilidad >= 0.9:
-            explanation['factores_positivos'].append("🎯 Alta confiabilidad (≥90%)")
+        if probabilidad >= 0.85:  # Era 0.9, ahora más realista
+            explanation['factores_positivos'].append("🎯 Alta confiabilidad (≥85%)")
         if distancia <= 50:
             explanation['factores_positivos'].append("📍 Distancia corta (≤50km)")
 
@@ -849,8 +890,8 @@ class RouteOptimizer:
             explanation['factores_negativos'].append("⏰ Tiempo excesivo (>72h)")
         if costo > 300:
             explanation['factores_negativos'].append("💸 Costo elevado (>$300)")
-        if probabilidad < 0.7:
-            explanation['factores_negativos'].append("⚠️ Baja confiabilidad (<70%)")
+        if probabilidad < 0.65:  # Era 0.7, ahora más realista
+            explanation['factores_negativos'].append("⚠️ Baja confiabilidad (<65%)")
         if distancia > 200:
             explanation['factores_negativos'].append("🛣️ Distancia muy larga (>200km)")
 

@@ -93,6 +93,26 @@ class TemporalFactorDetector:
         return result
 
     @staticmethod
+    def detect_seasonal_factors(fecha: datetime) -> Dict[str, Any]:
+        """🎄 Método simplificado para compatibilidad con external_factors_repository"""
+
+        eventos = TemporalFactorDetector._detect_events(fecha)
+        demanda = TemporalFactorDetector._calculate_demand_factor(fecha, eventos)
+        clima = TemporalFactorDetector._predict_weather_impact(fecha)
+        trafico = TemporalFactorDetector._calculate_traffic_patterns(fecha)
+
+        return {
+            'eventos_detectados': eventos['eventos'],
+            'factor_demanda': demanda,
+            'condicion_clima': clima['condicion'],
+            'trafico_nivel': trafico['nivel'],
+            'impacto_tiempo_extra': min(2.0, demanda * 0.5),  # Máximo 2 horas extra
+            'criticidad_logistica': TemporalFactorDetector._assess_criticality(
+                demanda, demanda * 0.5, demanda * 5, eventos['eventos']
+            )
+        }
+
+    @staticmethod
     def _detect_events(fecha: datetime) -> Dict[str, Any]:
         """🎄 Detección avanzada de eventos con sub-períodos"""
 
@@ -101,85 +121,85 @@ class TemporalFactorDetector:
         eventos_detectados = []
         intensidad_maxima = 1.0
 
-        # Navidad y Fin de Año (Diciembre)
+        # Navidad y Fin de Año (Diciembre) - MEJORADO
         if mes == 12:
             if 1 <= dia <= 15:
                 eventos_detectados.extend(['Pre_Navidad', 'Preparacion_Diciembre'])
-                intensidad_maxima = 1.8
+                intensidad_maxima = 1.6  # Era 1.8, reducido
             elif 16 <= dia <= 19:
                 eventos_detectados.extend(['Pre_Navidad_Intenso', 'Compras_Ultimo_Momento'])
-                intensidad_maxima = 2.3
+                intensidad_maxima = 2.0  # Era 2.3, reducido
             elif 20 <= dia <= 24:
                 eventos_detectados.extend(['Navidad_Pico', 'Emergencia_Regalos'])
-                intensidad_maxima = 3.0  # Pico máximo del año
+                intensidad_maxima = 2.5  # Era 3.0, reducido
             elif dia == 25:
                 eventos_detectados.extend(['Navidad', 'Dia_Navidad'])
                 intensidad_maxima = 0.3  # Todo cerrado
             elif 26 <= dia <= 30:
                 eventos_detectados.extend(['Post_Navidad', 'Preparacion_Fin_Ano'])
-                intensidad_maxima = 2.0
+                intensidad_maxima = 1.8  # Era 2.0, reducido
             elif dia == 31:
                 eventos_detectados.extend(['Fin_Ano', 'Nochevieja'])
                 intensidad_maxima = 0.4
 
-        # Buen Fin y Black Friday (Noviembre)
+        # Buen Fin y Black Friday (Noviembre) - MEJORADO
         elif mes == 11:
             if 10 <= dia <= 14:
                 eventos_detectados.extend(['Pre_Buen_Fin', 'Preparacion_BF'])
-                intensidad_maxima = 2.0
+                intensidad_maxima = 1.8  # Era 2.0, reducido
             elif 15 <= dia <= 17:  # Buen Fin México
                 eventos_detectados.extend(['Buen_Fin_Pico', 'Black_Friday_MX'])
-                intensidad_maxima = 3.2  # Segundo pico más alto
+                intensidad_maxima = 2.8  # Era 3.2, reducido
             elif 18 <= dia <= 25:
                 eventos_detectados.extend(['Post_Buen_Fin', 'Cyber_Monday_Extended'])
-                intensidad_maxima = 2.2
+                intensidad_maxima = 2.0  # Era 2.2, reducido
             elif 26 <= dia <= 30:
                 eventos_detectados.extend(['Pre_Diciembre', 'Preparacion_Navidad'])
-                intensidad_maxima = 1.6
+                intensidad_maxima = 1.4  # Era 1.6, reducido
 
-        # San Valentín (Febrero)
+        # San Valentín (Febrero) - MEJORADO
         elif mes == 2:
             if dia == 14:
                 eventos_detectados.extend(['San_Valentin', 'Dia_Amor'])
-                intensidad_maxima = 2.4
+                intensidad_maxima = 2.0  # Era 2.4, reducido
             elif 12 <= dia <= 13:
                 eventos_detectados.extend(['Pre_San_Valentin', 'Compras_Ultimo_Momento'])
-                intensidad_maxima = 2.0
+                intensidad_maxima = 1.8  # Era 2.0, reducido
             elif 10 <= dia <= 11:
                 eventos_detectados.extend(['Preparacion_San_Valentin'])
-                intensidad_maxima = 1.5
+                intensidad_maxima = 1.3  # Era 1.5, reducido
 
-        # Día de las Madres (Mayo)
+        # Día de las Madres (Mayo) - MEJORADO
         elif mes == 5:
-            segundo_domingo = TemporalFactorDetector._get_nth_weekday(2025, 5, 6, 2)  # 2do domingo
+            segundo_domingo = TemporalFactorDetector._get_nth_weekday(fecha.year, 5, 6, 2)
 
-            if dia == segundo_domingo:
+            if segundo_domingo and dia == segundo_domingo:
                 eventos_detectados.extend(['Dia_Madres', 'Dia_Madre_Pico'])
-                intensidad_maxima = 2.8
-            elif segundo_domingo - 3 <= dia <= segundo_domingo - 1:
+                intensidad_maxima = 2.4  # Era 2.8, reducido
+            elif segundo_domingo and segundo_domingo - 3 <= dia <= segundo_domingo - 1:
                 eventos_detectados.extend(['Pre_Dia_Madres', 'Compras_Emergencia'])
-                intensidad_maxima = 2.5
-            elif segundo_domingo - 7 <= dia <= segundo_domingo - 4:
+                intensidad_maxima = 2.2  # Era 2.5, reducido
+            elif segundo_domingo and segundo_domingo - 7 <= dia <= segundo_domingo - 4:
                 eventos_detectados.extend(['Preparacion_Dia_Madres'])
-                intensidad_maxima = 1.8
+                intensidad_maxima = 1.6  # Era 1.8, reducido
 
         # Fiestas Patrias (Septiembre)
         elif mes == 9:
             if 15 <= dia <= 16:
                 eventos_detectados.extend(['Fiestas_Patrias', 'Independencia_Mexico'])
-                intensidad_maxima = 1.7
+                intensidad_maxima = 1.5  # Era 1.7, reducido
             elif 13 <= dia <= 14:
                 eventos_detectados.extend(['Pre_Fiestas_Patrias'])
-                intensidad_maxima = 1.4
+                intensidad_maxima = 1.2  # Era 1.4, reducido
 
         # Halloween y Día de Muertos (Octubre-Noviembre)
         elif mes == 10:
             if 28 <= dia <= 31:
                 eventos_detectados.extend(['Halloween', 'Preparacion_Dia_Muertos'])
-                intensidad_maxima = 1.6
+                intensidad_maxima = 1.4  # Era 1.6, reducido
         elif mes == 11 and 1 <= dia <= 2:
             eventos_detectados.extend(['Dia_Muertos', 'Tradicion_Mexico'])
-            intensidad_maxima = 1.5
+            intensidad_maxima = 1.3  # Era 1.5, reducido
 
         # Día de Reyes (Enero)
         elif mes == 1:
@@ -188,10 +208,10 @@ class TemporalFactorDetector:
                 intensidad_maxima = 0.4  # Todo cerrado
             elif dia == 6:
                 eventos_detectados.extend(['Dia_Reyes', 'Reyes_Magos'])
-                intensidad_maxima = 2.2
+                intensidad_maxima = 2.0  # Era 2.2, reducido
             elif 2 <= dia <= 5:
                 eventos_detectados.extend(['Post_Ano_Nuevo', 'Preparacion_Reyes'])
-                intensidad_maxima = 1.8
+                intensidad_maxima = 1.6  # Era 1.8, reducido
             elif 7 <= dia <= 15:
                 eventos_detectados.extend(['Post_Reyes', 'Enero_Cuesta_Arriba'])
                 intensidad_maxima = 0.7  # Baja después de gastos
@@ -200,15 +220,17 @@ class TemporalFactorDetector:
         elif mes == 8:
             if 15 <= dia <= 31:
                 eventos_detectados.extend(['Regreso_Clases', 'Back_to_School'])
-                intensidad_maxima = 1.8
+                intensidad_maxima = 1.6  # Era 1.8, reducido
 
-        # Agregar eventos por configuración de settings
+        # Agregar eventos por configuración de settings (con factor reducido)
         if mes in settings.EVENTOS_TEMPORADA:
             for evento_config in settings.EVENTOS_TEMPORADA[mes]:
                 evento_dias = evento_config['dias']
                 if evento_dias[0] <= dia <= evento_dias[1]:
                     eventos_detectados.append(evento_config['evento'])
-                    intensidad_maxima = max(intensidad_maxima, evento_config['factor_demanda'])
+                    # Aplicar factor de reducción del 15%
+                    factor_reducido = evento_config['factor_demanda'] * 0.85
+                    intensidad_maxima = max(intensidad_maxima, factor_reducido)
 
         return {
             'eventos': eventos_detectados,
@@ -219,64 +241,64 @@ class TemporalFactorDetector:
 
     @staticmethod
     def _calculate_demand_factor(fecha: datetime, eventos: Dict[str, Any]) -> float:
-        """📈 Calcula factor de demanda con algoritmos avanzados"""
+        """📈 Calcula factor de demanda con algoritmos más conservadores"""
 
         base_factor = eventos['intensidad_maxima']
 
-        # Ajustes por día de la semana
+        # Ajustes por día de la semana (más conservadores)
         weekday = fecha.weekday()  # 0=Lunes, 6=Domingo
 
         weekday_multipliers = {
-            0: 0.95,  # Lunes - arranque lento
-            1: 1.05,  # Martes - día productivo
-            2: 1.10,  # Miércoles - pico mid-week
-            3: 1.15,  # Jueves - preparación fin de semana
-            4: 1.25,  # Viernes - máximo día de compras
-            5: 1.20,  # Sábado - compras familiares
-            6: 0.85  # Domingo - día de descanso
+            0: 0.98,  # Lunes - Era 0.95, menos penalización
+            1: 1.02,  # Martes - Era 1.05, más conservador
+            2: 1.05,  # Miércoles - Era 1.10, más conservador
+            3: 1.08,  # Jueves - Era 1.15, más conservador
+            4: 1.15,  # Viernes - Era 1.25, más conservador
+            5: 1.12,  # Sábado - Era 1.20, más conservador
+            6: 0.90  # Domingo - Era 0.85, menos penalización
         }
 
         weekday_factor = weekday_multipliers[weekday]
 
-        # Ajustes por proximidad a quincena
+        # Ajustes por proximidad a quincena (más conservadores)
         day_of_month = fecha.day
         quincena_factor = 1.0
 
         if 1 <= day_of_month <= 3:  # Inicio de mes
-            quincena_factor = 1.15
+            quincena_factor = 1.08  # Era 1.15, más conservador
         elif 14 <= day_of_month <= 16:  # Quincena
-            quincena_factor = 1.25
+            quincena_factor = 1.15  # Era 1.25, más conservador
         elif 28 <= day_of_month <= 31:  # Fin de mes
-            quincena_factor = 1.10
+            quincena_factor = 1.05  # Era 1.10, más conservador
 
-        # Ajustes estacionales macro
+        # Ajustes estacionales macro (más conservadores)
         mes = fecha.month
         seasonal_multipliers = {
-            1: 0.85,  # Enero - post navidad
-            2: 0.90,  # Febrero - San Valentín
-            3: 1.05,  # Marzo - primavera
-            4: 1.10,  # Abril - temporada fuerte
-            5: 1.20,  # Mayo - Día Madres
-            6: 1.00,  # Junio - normal
-            7: 0.95,  # Julio - vacaciones
-            8: 1.15,  # Agosto - regreso a clases
-            9: 1.05,  # Septiembre - fiestas patrias
-            10: 1.10,  # Octubre - Halloween
-            11: 1.30,  # Noviembre - Buen Fin
-            12: 1.35  # Diciembre - Navidad
+            1: 0.90,  # Enero - Era 0.85, menos penalización
+            2: 0.95,  # Febrero - Era 0.90, menos penalización
+            3: 1.02,  # Marzo - Era 1.05, más conservador
+            4: 1.05,  # Abril - Era 1.10, más conservador
+            5: 1.12,  # Mayo - Era 1.20, más conservador
+            6: 1.00,  # Junio - igual
+            7: 0.98,  # Julio - Era 0.95, menos penalización
+            8: 1.08,  # Agosto - Era 1.15, más conservador
+            9: 1.02,  # Septiembre - Era 1.05, más conservador
+            10: 1.05,  # Octubre - Era 1.10, más conservador
+            11: 1.20,  # Noviembre - Era 1.30, más conservador
+            12: 1.25  # Diciembre - Era 1.35, más conservador
         }
 
         seasonal_factor = seasonal_multipliers[mes]
 
-        # Factor de año (crecimiento anual estimado)
-        year_factor = 1.0 + (fecha.year - 2024) * 0.03  # 3% crecimiento anual
+        # Factor de año (crecimiento anual más conservador)
+        year_factor = 1.0 + (fecha.year - 2024) * 0.02  # Era 0.03, ahora 2%
 
         # Cálculo final
         final_factor = (base_factor * weekday_factor * quincena_factor *
                         seasonal_factor * year_factor)
 
-        # Límites de seguridad
-        final_factor = max(0.3, min(4.0, final_factor))
+        # Límites de seguridad más conservadores
+        final_factor = max(0.4, min(3.5, final_factor))  # Era 0.3-4.0, ahora 0.4-3.5
 
         return round(final_factor, 2)
 
@@ -312,12 +334,12 @@ class TemporalFactorDetector:
                 base_climate, cp_region
             )
 
-        # Variaciones aleatorias realistas día a día
+        # Variaciones aleatorias realistas día a día (más estables)
         import random
         random.seed(fecha.year * 1000 + fecha.timetuple().tm_yday)  # Seed determinístico
 
-        temp_variation = random.randint(-3, 3)
-        lluvia_variation = random.randint(-15, 15)
+        temp_variation = random.randint(-2, 2)  # Era -3,3, ahora más estable
+        lluvia_variation = random.randint(-10, 10)  # Era -15,15, ahora más estable
 
         final_temp = base_climate['temp'] + temp_variation
         final_lluvia = max(0, min(100, base_climate['lluvia'] + lluvia_variation))
@@ -347,7 +369,7 @@ class TemporalFactorDetector:
             'temperatura': final_temp,
             'probabilidad_lluvia': final_lluvia,
             'indice_calor': indice_calor,
-            'viento_kmh': random.randint(10, 25),
+            'viento_kmh': random.randint(10, 20),  # Era 10-25, más estable
             'impacto_logistico': TemporalFactorDetector._assess_weather_logistics_impact(
                 condicion, final_temp, final_lluvia
             )
@@ -355,53 +377,53 @@ class TemporalFactorDetector:
 
     @staticmethod
     def _calculate_traffic_patterns(fecha: datetime) -> Dict[str, Any]:
-        """🚦 Patrones de tráfico avanzados México"""
+        """🚦 Patrones de tráfico avanzados México (más conservadores)"""
 
         hora = fecha.hour
         weekday = fecha.weekday()
         mes = fecha.month
 
-        # Patrones base por hora
+        # Patrones base por hora (más conservadores)
         hourly_traffic = {
             0: 0.2, 1: 0.1, 2: 0.1, 3: 0.1, 4: 0.2, 5: 0.3,
-            6: 0.5, 7: 0.8, 8: 0.9, 9: 0.7, 10: 0.6, 11: 0.7,
-            12: 0.8, 13: 0.9, 14: 0.8, 15: 0.7, 16: 0.6, 17: 0.8,
-            18: 0.9, 19: 0.9, 20: 0.7, 21: 0.5, 22: 0.4, 23: 0.3
+            6: 0.4, 7: 0.7, 8: 0.8, 9: 0.6, 10: 0.5, 11: 0.6,  # Era 0.5,0.8,0.9,0.7
+            12: 0.7, 13: 0.8, 14: 0.7, 15: 0.6, 16: 0.5, 17: 0.7,
+            18: 0.8, 19: 0.8, 20: 0.6, 21: 0.4, 22: 0.3, 23: 0.3  # Era 0.8,0.9,0.9,0.7
         }
 
         base_congestion = hourly_traffic[hora]
 
-        # Ajustes por día de semana
+        # Ajustes por día de semana (más conservadores)
         if weekday < 5:  # Lunes a Viernes
             if 7 <= hora <= 10 or 17 <= hora <= 20:
-                base_congestion = min(1.0, base_congestion * 1.3)  # Rush hours
+                base_congestion = min(1.0, base_congestion * 1.2)  # Era 1.3, más conservador
         elif weekday == 5:  # Sábado
             if 10 <= hora <= 18:
-                base_congestion = min(1.0, base_congestion * 1.2)  # Shopping hours
+                base_congestion = min(1.0, base_congestion * 1.1)  # Era 1.2, más conservador
         else:  # Domingo
-            base_congestion *= 0.7  # Día más tranquilo
+            base_congestion *= 0.8  # Era 0.7, menos penalización
 
-        # Ajustes por temporadas especiales
+        # Ajustes por temporadas especiales (más conservadores)
         if mes == 12:  # Diciembre
-            base_congestion = min(1.0, base_congestion * 1.4)
+            base_congestion = min(1.0, base_congestion * 1.2)  # Era 1.4, más conservador
         elif mes == 11:  # Noviembre (Buen Fin)
-            base_congestion = min(1.0, base_congestion * 1.3)
+            base_congestion = min(1.0, base_congestion * 1.15)  # Era 1.3, más conservador
 
-        # Determinar nivel categórico
-        if base_congestion >= 0.9:
+        # Determinar nivel categórico (umbrales ajustados)
+        if base_congestion >= 0.85:  # Era 0.9, más permisivo
             nivel = 'Muy_Alto'
-        elif base_congestion >= 0.7:
+        elif base_congestion >= 0.65:  # Era 0.7, más permisivo
             nivel = 'Alto'
-        elif base_congestion >= 0.5:
+        elif base_congestion >= 0.45:  # Era 0.5, más permisivo
             nivel = 'Moderado'
-        elif base_congestion >= 0.3:
+        elif base_congestion >= 0.25:  # Era 0.3, más permisivo
             nivel = 'Bajo'
         else:
             nivel = 'Muy_Bajo'
 
-        # Zonas críticas México
+        # Zonas críticas México (solo si muy alto)
         zonas_criticas = []
-        if base_congestion >= 0.7:
+        if base_congestion >= 0.8:  # Era 0.7, más restrictivo
             zonas_criticas = [
                 'CDMX_Centro', 'Periferico_Sur', 'Insurgentes',
                 'Circuito_Interior', 'Viaducto', 'Ejes_Viales'
@@ -417,13 +439,13 @@ class TemporalFactorDetector:
             'score': round(base_congestion, 2),
             'zonas_criticas': zonas_criticas,
             'horas_evitar': horas_evitar,
-            'factor_velocidad': round(1.0 - (base_congestion * 0.4), 2)
+            'factor_velocidad': round(1.0 - (base_congestion * 0.3), 2)  # Era 0.4, más conservador
         }
 
     @staticmethod
     def _assess_operational_capacity(fecha: datetime,
                                      demand_factor: float) -> Dict[str, Any]:
-        """🏭 Evaluación de capacidad operativa"""
+        """🏭 Evaluación de capacidad operativa (más conservadora)"""
 
         # Capacidad base (100% en condiciones normales)
         base_capacity = 100.0
@@ -433,26 +455,26 @@ class TemporalFactorDetector:
         if weekday < 5:  # Lunes a Viernes
             weekday_capacity = 100.0
         elif weekday == 5:  # Sábado
-            weekday_capacity = 85.0  # Menos personal
+            weekday_capacity = 90.0  # Era 85.0, más optimista
         else:  # Domingo
-            weekday_capacity = 60.0  # Capacidad limitada
+            weekday_capacity = 70.0  # Era 60.0, más optimista
 
         # Ajustes por horario
         hora = fecha.hour
         if 9 <= hora <= 18:  # Horario normal
             hour_capacity = 100.0
         elif 6 <= hora <= 8 or 19 <= hora <= 21:  # Horario extendido
-            hour_capacity = 75.0
+            hour_capacity = 80.0  # Era 75.0, más optimista
         else:  # Horario nocturno/madrugada
-            hour_capacity = 25.0
+            hour_capacity = 35.0  # Era 25.0, más optimista
 
-        # Impacto de la demanda en la capacidad
-        if demand_factor > 2.5:  # Demanda crítica
-            demand_impact = 0.6  # Capacidad reducida por saturación
-        elif demand_factor > 2.0:  # Demanda alta
-            demand_impact = 0.8
-        elif demand_factor > 1.5:  # Demanda elevada
-            demand_impact = 0.9
+        # Impacto de la demanda en la capacidad (más conservador)
+        if demand_factor > 2.8:  # Era 2.5, umbral más alto
+            demand_impact = 0.7  # Era 0.6, menos penalización
+        elif demand_factor > 2.3:  # Era 2.0, umbral más alto
+            demand_impact = 0.85  # Era 0.8, menos penalización
+        elif demand_factor > 1.8:  # Era 1.5, umbral más alto
+            demand_impact = 0.95  # Era 0.9, menos penalización
         else:  # Demanda normal
             demand_impact = 1.0
 
@@ -460,15 +482,15 @@ class TemporalFactorDetector:
         effective_capacity = (weekday_capacity * hour_capacity / 100.0 *
                               demand_impact)
 
-        # Saturación de red
-        utilization = min(100.0, (demand_factor * 50))  # 50% base utilization
+        # Saturación de red (más conservadora)
+        utilization = min(100.0, (demand_factor * 40))  # Era 50%, más conservador
         saturation = 'Baja'
 
-        if utilization >= 90:
+        if utilization >= 85:  # Era 90, más estricto
             saturation = 'Crítica'
-        elif utilization >= 75:
+        elif utilization >= 70:  # Era 75, más estricto
             saturation = 'Alta'
-        elif utilization >= 60:
+        elif utilization >= 55:  # Era 60, más estricto
             saturation = 'Media'
 
         return {
@@ -478,23 +500,26 @@ class TemporalFactorDetector:
             'holgura_operativa': round(max(0, 100 - utilization), 1)
         }
 
-    # Métodos auxiliares
+    # Métodos auxiliares (sin cambios significativos)
     @staticmethod
     def _get_nth_weekday(year: int, month: int, weekday: int, n: int) -> int:
         """📅 Obtiene el día del n-ésimo día de la semana en un mes"""
-        first_day = datetime(year, month, 1)
-        first_weekday = first_day.weekday()
+        try:
+            first_day = datetime(year, month, 1)
+            first_weekday = first_day.weekday()
 
-        days_ahead = weekday - first_weekday
-        if days_ahead <= 0:
-            days_ahead += 7
+            days_ahead = weekday - first_weekday
+            if days_ahead <= 0:
+                days_ahead += 7
 
-        target_date = first_day + timedelta(days=days_ahead + (n - 1) * 7)
+            target_date = first_day + timedelta(days=days_ahead + (n - 1) * 7)
 
-        if target_date.month != month:
+            if target_date.month != month:
+                return None
+
+            return target_date.day
+        except Exception:
             return None
-
-        return target_date.day
 
     @staticmethod
     def _identify_region_by_cp(codigo_postal: str) -> str:
@@ -546,33 +571,33 @@ class TemporalFactorDetector:
     @staticmethod
     def _assess_weather_logistics_impact(condicion: str, temp: int,
                                          lluvia: int) -> Dict[str, float]:
-        """🌦️ Evalúa impacto logístico del clima"""
+        """🌦️ Evalúa impacto logístico del clima (más conservador)"""
 
-        # Multiplicadores de impacto
+        # Multiplicadores de impacto (más conservadores)
         time_impact = 1.0
         cost_impact = 1.0
         reliability_impact = 1.0
 
-        # Impacto por lluvia
+        # Impacto por lluvia (más conservador)
         if lluvia > 80:
-            time_impact *= 1.6
-            reliability_impact *= 0.7
+            time_impact *= 1.4  # Era 1.6, más conservador
+            reliability_impact *= 0.8  # Era 0.7, menos penalización
         elif lluvia > 60:
-            time_impact *= 1.3
-            reliability_impact *= 0.85
+            time_impact *= 1.2  # Era 1.3, más conservador
+            reliability_impact *= 0.9  # Era 0.85, menos penalización
         elif lluvia > 40:
-            time_impact *= 1.15
-            reliability_impact *= 0.95
+            time_impact *= 1.1  # Era 1.15, más conservador
+            reliability_impact *= 0.97  # Era 0.95, menos penalización
 
-        # Impacto por temperatura
+        # Impacto por temperatura (más conservador)
         if temp > 38 or temp < 5:
-            time_impact *= 1.3
-            cost_impact *= 1.2
-            reliability_impact *= 0.8
+            time_impact *= 1.2  # Era 1.3, más conservador
+            cost_impact *= 1.15  # Era 1.2, más conservador
+            reliability_impact *= 0.85  # Era 0.8, menos penalización
         elif temp > 35 or temp < 10:
-            time_impact *= 1.15
-            cost_impact *= 1.1
-            reliability_impact *= 0.9
+            time_impact *= 1.1  # Era 1.15, más conservador
+            cost_impact *= 1.05  # Era 1.1, más conservador
+            reliability_impact *= 0.95  # Era 0.9, menos penalización
 
         return {
             'factor_tiempo': round(time_impact, 2),
@@ -582,30 +607,30 @@ class TemporalFactorDetector:
 
     @staticmethod
     def _categorize_season(demand_factor: float) -> str:
-        """📊 Categoriza temporada por factor de demanda"""
-        if demand_factor >= 3.0:
+        """📊 Categoriza temporada por factor de demanda (umbrales ajustados)"""
+        if demand_factor >= 2.8:  # Era 3.0, más accesible
             return 'Hiper_Critica'
-        elif demand_factor >= 2.5:
+        elif demand_factor >= 2.3:  # Era 2.5, más accesible
             return 'Critica'
-        elif demand_factor >= 2.0:
+        elif demand_factor >= 1.8:  # Era 2.0, más accesible
             return 'Alta'
-        elif demand_factor >= 1.5:
+        elif demand_factor >= 1.4:  # Era 1.5, más accesible
             return 'Elevada'
-        elif demand_factor >= 1.2:
+        elif demand_factor >= 1.1:  # Era 1.2, más accesible
             return 'Media_Alta'
         else:
             return 'Normal'
 
     @staticmethod
     def _categorize_event(intensidad: float) -> str:
-        """🎯 Categoriza evento por intensidad"""
-        if intensidad >= 3.0:
+        """🎯 Categoriza evento por intensidad (umbrales ajustados)"""
+        if intensidad >= 2.8:  # Era 3.0, más accesible
             return 'Mega_Evento'
-        elif intensidad >= 2.5:
+        elif intensidad >= 2.3:  # Era 2.5, más accesible
             return 'Evento_Mayor'
-        elif intensidad >= 2.0:
+        elif intensidad >= 1.8:  # Era 2.0, más accesible
             return 'Evento_Significativo'
-        elif intensidad >= 1.5:
+        elif intensidad >= 1.3:  # Era 1.5, más accesible
             return 'Evento_Menor'
         else:
             return 'Dia_Normal'
@@ -613,18 +638,21 @@ class TemporalFactorDetector:
     @staticmethod
     def _identify_logistical_risks(fecha: datetime,
                                    eventos: Dict[str, Any]) -> List[str]:
-        """⚠️ Identifica riesgos logísticos específicos"""
+        """⚠️ Identifica riesgos logísticos específicos (más conservador)"""
 
         riesgos = []
 
-        # Riesgos por temporada alta
-        if eventos['intensidad_maxima'] > 2.5:
+        # Riesgos por temporada alta (umbral más alto)
+        if eventos['intensidad_maxima'] > 2.3:  # Era 2.5, umbral más bajo
             riesgos.extend([
                 'saturacion_red_distribucion',
                 'agotamiento_inventario',
-                'demoras_picking_packing',
-                'congestion_centros_distribucion'
+                'demoras_picking_packing'
             ])
+
+            # Solo agregar riesgo crítico si realmente es muy alto
+            if eventos['intensidad_maxima'] > 2.8:
+                riesgos.append('congestion_centros_distribucion')
 
         # Riesgos por día de semana
         if fecha.weekday() == 4:  # Viernes
@@ -632,19 +660,21 @@ class TemporalFactorDetector:
         elif fecha.weekday() == 6:  # Domingo
             riesgos.append('capacidad_operativa_limitada')
 
-        # Riesgos por mes
+        # Riesgos por mes (más selectivos)
         mes = fecha.month
-        if mes in [6, 7, 8, 9]:  # Temporada lluvia
+        if mes in [7, 8, 9]:  # Solo meses de lluvia intensa
             riesgos.extend([
                 'retrasos_clima_adverso',
-                'inundaciones_vias_acceso',
                 'dificultades_ultima_milla'
             ])
 
-        if mes == 12:
+            # Solo en pico de lluvia
+            if mes in [7, 8]:
+                riesgos.append('inundaciones_vias_acceso')
+
+        if mes == 12 and fecha.day > 20:  # Solo en pico navideño
             riesgos.extend([
                 'personal_reducido_vacaciones',
-                'cierre_proveedores_terceros',
                 'congestion_extrema_ciudades'
             ])
 
@@ -654,35 +684,35 @@ class TemporalFactorDetector:
     def _calculate_time_impact(fecha: datetime, demanda: float,
                                clima: Dict[str, Any], trafico: Dict[str, Any],
                                capacidad: Dict[str, Any]) -> float:
-        """⏱️ Calcula impacto total en tiempo"""
+        """⏱️ Calcula impacto total en tiempo (más conservador)"""
 
         base_impact = 0.0
 
-        # Impacto por demanda
-        if demanda > 2.5:
-            base_impact += 3.0
-        elif demanda > 2.0:
-            base_impact += 2.0
-        elif demanda > 1.5:
-            base_impact += 1.0
+        # Impacto por demanda (umbrales más altos)
+        if demanda > 2.8:  # Era 2.5, umbral más alto
+            base_impact += 2.0  # Era 3.0, más conservador
+        elif demanda > 2.3:  # Era 2.0, umbral más alto
+            base_impact += 1.5  # Era 2.0, más conservador
+        elif demanda > 1.8:  # Era 1.5, umbral más alto
+            base_impact += 0.8  # Era 1.0, más conservador
 
-        # Impacto por clima
+        # Impacto por clima (más conservador)
         weather_impact = clima.get('impacto_logistico', {})
         time_factor = weather_impact.get('factor_tiempo', 1.0)
-        base_impact += (time_factor - 1.0) * 2.0
+        base_impact += (time_factor - 1.0) * 1.5  # Era 2.0, más conservador
 
-        # Impacto por tráfico
+        # Impacto por tráfico (más conservador)
         traffic_score = trafico['score']
-        if traffic_score > 0.8:
-            base_impact += 2.0
-        elif traffic_score > 0.6:
-            base_impact += 1.0
+        if traffic_score > 0.85:  # Era 0.8, umbral más alto
+            base_impact += 1.5  # Era 2.0, más conservador
+        elif traffic_score > 0.65:  # Era 0.6, umbral más alto
+            base_impact += 0.8  # Era 1.0, más conservador
 
-        # Impacto por capacidad limitada
-        if capacidad['disponible_pct'] < 70:
-            base_impact += 2.0
-        elif capacidad['disponible_pct'] < 85:
-            base_impact += 1.0
+        # Impacto por capacidad limitada (más conservador)
+        if capacidad['disponible_pct'] < 65:  # Era 70, umbral más bajo
+            base_impact += 1.5  # Era 2.0, más conservador
+        elif capacidad['disponible_pct'] < 80:  # Era 85, umbral más bajo
+            base_impact += 0.8  # Era 1.0, más conservador
 
         return round(max(0.0, base_impact), 1)
 
@@ -690,70 +720,70 @@ class TemporalFactorDetector:
     def _calculate_cost_impact(fecha: datetime, demanda: float,
                                eventos: Dict[str, Any],
                                capacidad: Dict[str, Any]) -> float:
-        """💰 Calcula impacto en costos"""
+        """💰 Calcula impacto en costos (más conservador)"""
 
         base_impact = 0.0
 
-        # Costos premium por alta demanda
-        if demanda > 2.5:
-            base_impact += 25.0  # 25% extra
-        elif demanda > 2.0:
-            base_impact += 15.0
-        elif demanda > 1.5:
-            base_impact += 8.0
+        # Costos premium por alta demanda (más conservador)
+        if demanda > 2.8:  # Era 2.5, umbral más alto
+            base_impact += 18.0  # Era 25.0, más conservador
+        elif demanda > 2.3:  # Era 2.0, umbral más alto
+            base_impact += 12.0  # Era 15.0, más conservador
+        elif demanda > 1.8:  # Era 1.5, umbral más alto
+            base_impact += 6.0  # Era 8.0, más conservador
 
-        # Costos por eventos especiales
+        # Costos por eventos especiales (más conservador)
         if eventos['es_evento_mayor']:
-            base_impact += 10.0
+            base_impact += 8.0  # Era 10.0, más conservador
 
-        # Costos por capacidad limitada (overtime, etc)
+        # Costos por capacidad limitada (más conservador)
         if capacidad['saturacion'] == 'Crítica':
-            base_impact += 20.0
+            base_impact += 15.0  # Era 20.0, más conservador
         elif capacidad['saturacion'] == 'Alta':
-            base_impact += 12.0
+            base_impact += 9.0  # Era 12.0, más conservador
 
-        # Costos adicionales fin de semana
+        # Costos adicionales fin de semana (más conservador)
         if fecha.weekday() >= 5:
-            base_impact += 5.0
+            base_impact += 3.0  # Era 5.0, más conservador
 
         return round(base_impact, 1)
 
     @staticmethod
     def _assess_criticality(demanda: float, tiempo_impacto: float,
                             costo_impacto: float, riesgos: List[str]) -> str:
-        """🎯 Evalúa criticidad general"""
+        """🎯 Evalúa criticidad general (umbrales ajustados)"""
 
         score = 0
 
-        # Score por demanda
-        if demanda > 2.8:
+        # Score por demanda (umbrales más altos)
+        if demanda > 2.8:  # Era 2.8, igual
             score += 4
-        elif demanda > 2.3:
+        elif demanda > 2.3:  # Era 2.3, igual
             score += 3
-        elif demanda > 1.8:
+        elif demanda > 1.8:  # Era 1.8, igual
             score += 2
-        elif demanda > 1.3:
+        elif demanda > 1.3:  # Era 1.3, igual
             score += 1
 
-        # Score por impacto tiempo
-        if tiempo_impacto > 3.0:
+        # Score por impacto tiempo (umbrales más altos)
+        if tiempo_impacto > 2.5:  # Era 3.0, umbral más bajo
             score += 3
-        elif tiempo_impacto > 2.0:
+        elif tiempo_impacto > 1.5:  # Era 2.0, umbral más bajo
             score += 2
-        elif tiempo_impacto > 1.0:
+        elif tiempo_impacto > 0.8:  # Era 1.0, umbral más bajo
             score += 1
 
-        # Score por número de riesgos
-        score += min(3, len(riesgos) // 2)
+        # Score por número de riesgos (más conservador)
+        score += min(2, len(riesgos) // 3)  # Era //2, ahora más conservador
 
-        # Determinar criticidad
-        if score >= 8:
+        # Determinar criticidad (umbrales ajustados)
+        if score >= 7:  # Era 8, umbral más bajo
             return 'Crítica'
-        elif score >= 6:
+        elif score >= 5:  # Era 6, umbral más bajo
             return 'Alta'
-        elif score >= 4:
+        elif score >= 3:  # Era 4, umbral más bajo
             return 'Media'
-        elif score >= 2:
+        elif score >= 1:  # Era 2, umbral más bajo
             return 'Baja'
         else:
             return 'Normal'
@@ -762,19 +792,19 @@ class TemporalFactorDetector:
     def _generate_alerts(demanda: float, clima: Dict[str, Any],
                          trafico: Dict[str, Any],
                          capacidad: Dict[str, Any]) -> List[str]:
-        """🚨 Genera alertas operativas"""
+        """🚨 Genera alertas operativas (umbrales ajustados)"""
 
         alertas = []
 
-        if demanda > 2.8:
+        if demanda > 2.8:  # Era 2.8, igual
             alertas.append('🔴 DEMANDA CRÍTICA: Activar protocolos de emergencia')
-        elif demanda > 2.3:
+        elif demanda > 2.3:  # Era 2.3, igual
             alertas.append('🟡 DEMANDA ALTA: Monitorear capacidad de cerca')
 
-        if clima['probabilidad_lluvia'] > 70:
+        if clima['probabilidad_lluvia'] > 75:  # Era 70, umbral más alto
             alertas.append('🌧️ CLIMA ADVERSO: Preparar rutas alternativas')
 
-        if trafico['score'] > 0.8:
+        if trafico['score'] > 0.85:  # Era 0.8, umbral más alto
             alertas.append('🚦 TRÁFICO CRÍTICO: Evitar horas pico')
 
         if capacidad['saturacion'] == 'Crítica':
@@ -793,14 +823,14 @@ class TemporalFactorDetector:
         for i in range(1, 4):  # Próximos 3 días
             fecha_pred = fecha + timedelta(days=i)
 
-            # Predicción simplificada
-            pred_demanda = demanda * 0.9  # Decremento gradual
+            # Predicción simplificada (más conservadora)
+            pred_demanda = demanda * 0.95  # Era 0.9, decremento más lento
 
             predicciones.append({
                 'fecha': fecha_pred.date().isoformat(),
                 'demanda_predicha': round(pred_demanda, 2),
                 'tendencia': 'descendente' if pred_demanda < demanda else 'estable',
-                'confianza': 0.8 - (i * 0.1)  # Menos confianza a futuro
+                'confianza': 0.85 - (i * 0.05)  # Era 0.8-(i*0.1), más conservador
             })
 
         return predicciones
@@ -809,30 +839,35 @@ class TemporalFactorDetector:
     def _generate_recommendations(fecha: datetime, demanda: float,
                                   eventos: Dict[str, Any], clima: Dict[str, Any],
                                   capacidad: Dict[str, Any]) -> List[str]:
-        """💡 Genera recomendaciones estratégicas"""
+        """💡 Genera recomendaciones estratégicas (más selectivas)"""
 
         recomendaciones = []
 
-        if demanda > 2.5:
+        if demanda > 2.8:  # Era 2.5, umbral más alto
             recomendaciones.extend([
                 '📈 Activar capacidad adicional de fulfillment',
                 '🚚 Contratar flota externa adicional',
-                '⏰ Extender horarios de operación',
-                '📦 Priorizar productos alta rotación'
+                '⏰ Extender horarios de operación'
             ])
 
-        if clima['probabilidad_lluvia'] > 60:
+            # Solo si es muy crítico
+            if demanda > 3.0:
+                recomendaciones.append('📦 Priorizar productos alta rotación')
+
+        if clima['probabilidad_lluvia'] > 75:  # Era 60, umbral más alto
             recomendaciones.extend([
                 '🌧️ Usar vehículos cubiertos',
-                '🛣️ Activar rutas alternativas',
-                '📱 Comunicar delays proactivamente'
+                '🛣️ Activar rutas alternativas'
             ])
+
+            # Solo si es muy probable
+            if clima['probabilidad_lluvia'] > 85:
+                recomendaciones.append('📱 Comunicar delays proactivamente')
 
         if capacidad['saturacion'] == 'Crítica':
             recomendaciones.extend([
                 '🔄 Redistribuir carga entre nodos',
-                '⚡ Implementar fulfillment distribuido',
-                '📊 Activar análisis en tiempo real'
+                '⚡ Implementar fulfillment distribuido'
             ])
 
         return recomendaciones
@@ -841,20 +876,20 @@ class TemporalFactorDetector:
     def _calculate_prediction_confidence(fecha: datetime,
                                          eventos: Dict[str, Any],
                                          clima: Dict[str, Any]) -> float:
-        """📊 Calcula confianza de las predicciones"""
+        """📊 Calcula confianza de las predicciones (más conservadora)"""
 
-        base_confidence = 0.85
+        base_confidence = 0.88  # Era 0.85, ligeramente más optimista
 
-        # Reducir confianza en eventos impredecibles
-        if eventos['intensidad_maxima'] > 2.5:
-            base_confidence -= 0.15
+        # Reducir confianza en eventos impredecibles (más conservador)
+        if eventos['intensidad_maxima'] > 2.8:  # Era 2.5, umbral más alto
+            base_confidence -= 0.12  # Era 0.15, menos penalización
 
-        # Reducir confianza en clima adverso
-        if clima['probabilidad_lluvia'] > 70:
-            base_confidence -= 0.1
+        # Reducir confianza en clima adverso (más conservador)
+        if clima['probabilidad_lluvia'] > 75:  # Era 70, umbral más alto
+            base_confidence -= 0.08  # Era 0.1, menos penalización
 
-        # Reducir confianza en fines de semana
+        # Reducir confianza en fines de semana (más conservador)
         if fecha.weekday() >= 5:
-            base_confidence -= 0.05
+            base_confidence -= 0.03  # Era 0.05, menos penalización
 
-        return round(max(0.5, base_confidence), 2)
+        return round(max(0.6, base_confidence), 2)  # Era 0.5, mínimo más alto

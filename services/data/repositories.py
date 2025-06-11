@@ -1,9 +1,11 @@
-import polars as pl
-from pathlib import Path
-from typing import Optional, List, Dict, Any, Tuple
-from abc import ABC, abstractmethod
-from datetime import datetime
+import re
 import time
+from abc import ABC
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, List, Dict, Any
+
+import polars as pl
 
 from config.settings import settings
 from utils.logger import logger
@@ -39,6 +41,37 @@ class BaseRepository(ABC):
             logger.info(f"✅ CSV cargado: {filename} ({df.height} filas)")
 
         return self._cache[filename]
+
+    def _clean_coordinate_value(self, value: Any) -> float:
+        """🧹 Limpia valores de coordenadas problemáticos"""
+        if value is None:
+            return 0.0
+
+        # Convertir a string para limpiar
+        str_value = str(value).strip()
+
+        # Remover paréntesis, espacios y caracteres especiales
+        cleaned = re.sub(r'[^\d\.\-]', '', str_value)
+
+        try:
+            coord_float = float(cleaned)
+            return coord_float
+        except (ValueError, TypeError):
+            logger.warning(f"⚠️ Coordenada inválida: {value} -> usando 0.0")
+            return 0.0
+
+    def _clean_id_value(self, value: Any) -> str:
+        """🧹 Limpia valores de ID problemáticos"""
+        if value is None:
+            return ""
+
+        str_value = str(value).strip()
+
+        # Remover paréntesis al inicio y caracteres especiales
+        cleaned = re.sub(r'^\([^)]*\)', '', str_value).strip()
+        cleaned = re.sub(r'[^\w\-]', '', cleaned)
+
+        return cleaned if len(cleaned) >= 2 else ""
 
 
 class ProductRepository(BaseRepository):
@@ -100,10 +133,37 @@ class StoreRepository(BaseRepository):
         return self._load_with_cache(settings.CSV_FILES['tiendas'])
 
     def get_store_by_id(self, tienda_id: str) -> Optional[Dict[str, Any]]:
-        """🔍 Busca tienda por ID"""
+        """🔍 Busca tienda por ID con limpieza robusta"""
         df = self.load_data()
-        result = df.filter(pl.col('tienda_id') == tienda_id)
-        return result.to_dicts()[0] if result.height > 0 else None
+
+        # Limpiar el ID buscado
+        clean_search_id = self._clean_id_value(tienda_id)
+
+        for store in df.to_dicts():
+            try:
+                # Limpiar ID de la tienda en el CSV
+                store_id_raw = store.get('tienda_id', '')
+                store_id_clean = self._clean_id_value(store_id_raw)
+
+                if store_id_clean == clean_search_id and store_id_clean:
+                    # Limpiar coordenadas
+                    store['latitud'] = self._clean_coordinate_value(store.get('latitud'))
+                    store['longitud'] = self._clean_coordinate_value(store.get('longitud'))
+                    store['tienda_id'] = store_id_clean  # Usar ID limpio
+
+                    # Validar coordenadas para México
+                    if not (14.0 <= store['latitud'] <= 33.0 and -118.0 <= store['longitud'] <= -86.0):
+                        logger.warning(f"⚠️ Coordenadas fuera de México para {store_id_clean}")
+                        continue
+
+                    return store
+
+            except Exception as e:
+                logger.warning(f"❌ Error procesando tienda {store_id_raw}: {e}")
+                continue
+
+        logger.warning(f"❌ Tienda no encontrada: {tienda_id}")
+        return None
 
     def find_stores_by_postal_code_range(self, codigo_postal: str,
                                          max_distance_km: float = 50.0) -> List[Dict[str, Any]]:
@@ -118,8 +178,8 @@ class StoreRepository(BaseRepository):
             logger.warning(f"❌ CP no encontrado: {codigo_postal}")
             return []
 
-        cp_lat = cp_info.get('latitud_centro', cp_info.get('latitud', 19.4326))
-        cp_lon = cp_info.get('longitud_centro', cp_info.get('longitud', -99.1332))
+        cp_lat = cp_info.get('latitud_centro', 19.4326)  # Default CDMX
+        cp_lon = cp_info.get('longitud_centro', -99.1332)
 
         # Calcular distancias a todas las tiendas
         df = self.load_data()
@@ -127,37 +187,19 @@ class StoreRepository(BaseRepository):
 
         for store in df.to_dicts():
             try:
-                # Verificar que tienda_id sea válido
-                tienda_id = str(store.get('tienda_id', ''))
-                if not tienda_id or tienda_id.startswith('(') or len(tienda_id) < 2:
-                    logger.warning(f"⚠️ Tienda ID inválido: {tienda_id}")
+                # Limpiar tienda_id
+                tienda_id_raw = store.get('tienda_id', '')
+                tienda_id_clean = self._clean_id_value(tienda_id_raw)
+
+                if not tienda_id_clean:
                     continue
 
-                # Limpiar coordenadas de la tienda
-                store_lat = store.get('latitud', 0)
-                store_lon = store.get('longitud', 0)
+                # Limpiar coordenadas
+                store_lat = self._clean_coordinate_value(store.get('latitud'))
+                store_lon = self._clean_coordinate_value(store.get('longitud'))
 
-                # Si las coordenadas están como string con formato problemático
-                if isinstance(store_lat, str):
-                    store_lat_clean = store_lat.replace('(', '').replace(')', '').strip()
-                    if store_lat_clean and store_lat_clean.replace('.', '').replace('-', '').isdigit():
-                        store_lat = float(store_lat_clean)
-                    else:
-                        continue
-
-                if isinstance(store_lon, str):
-                    store_lon_clean = store_lon.replace('(', '').replace(')', '').strip()
-                    if store_lon_clean and store_lon_clean.replace('.', '').replace('-', '').isdigit():
-                        store_lon = float(store_lon_clean)
-                    else:
-                        continue
-
-                if store_lat == 0 and store_lon == 0:
-                    continue  # Skip tiendas sin coordenadas válidas
-
-                # Validar rangos de coordenadas para México
+                # Validar coordenadas
                 if not (14.0 <= store_lat <= 33.0 and -118.0 <= store_lon <= -86.0):
-                    logger.warning(f"⚠️ Coordenadas fuera de México: lat={store_lat}, lon={store_lon}")
                     continue
 
                 distance = GeoCalculator.calculate_distance_km(
@@ -165,13 +207,15 @@ class StoreRepository(BaseRepository):
                 )
 
                 if distance <= max_distance_km:
-                    store['distancia_km'] = distance
-                    store['latitud'] = store_lat  # Coordenadas limpias
-                    store['longitud'] = store_lon
-                    stores_list.append(store)
+                    store_clean = store.copy()
+                    store_clean['tienda_id'] = tienda_id_clean
+                    store_clean['latitud'] = store_lat
+                    store_clean['longitud'] = store_lon
+                    store_clean['distancia_km'] = distance
+                    stores_list.append(store_clean)
 
-            except (ValueError, TypeError) as e:
-                logger.warning(f"❌ Error procesando tienda {store.get('tienda_id', 'unknown')}: {e}")
+            except Exception as e:
+                logger.warning(f"❌ Error procesando tienda {tienda_id_raw}: {e}")
                 continue
 
         # Ordenar por distancia
@@ -188,45 +232,47 @@ class CEDISRepository(BaseRepository):
         return self._load_with_cache(settings.CSV_FILES['cedis'])
 
     def get_cedis_by_id(self, cedis_id: str) -> Optional[Dict[str, Any]]:
-        """🔍 Busca CEDIS por ID"""
+        """🔍 Busca CEDIS por ID con limpieza robusta"""
         df = self.load_data()
+
+        # Limpiar el ID buscado
+        clean_search_id = self._clean_id_value(cedis_id)
 
         for cedis in df.to_dicts():
             try:
-                current_id = str(cedis.get('cedis_id', ''))
-                if current_id == cedis_id:
-                    # Validar y limpiar coordenadas
-                    lat = cedis.get('latitud', 0)
-                    lon = cedis.get('longitud', 0)
+                # Limpiar ID del CEDIS
+                cedis_id_raw = cedis.get('cedis_id', '')
+                cedis_id_clean = self._clean_id_value(cedis_id_raw)
 
-                    if isinstance(lat, str):
-                        lat = float(lat.replace('(', '').replace(')', '').strip())
-                    if isinstance(lon, str):
-                        lon = float(lon.replace('(', '').replace(')', '').strip())
+                if cedis_id_clean == clean_search_id and cedis_id_clean:
+                    # Limpiar coordenadas
+                    cedis['latitud'] = self._clean_coordinate_value(cedis.get('latitud'))
+                    cedis['longitud'] = self._clean_coordinate_value(cedis.get('longitud'))
+                    cedis['cedis_id'] = cedis_id_clean
 
-                    # Validar rangos para México
-                    if 14.0 <= lat <= 33.0 and -118.0 <= lon <= -86.0:
-                        cedis['latitud'] = lat
-                        cedis['longitud'] = lon
+                    # Validar coordenadas para México
+                    if 14.0 <= cedis['latitud'] <= 33.0 and -118.0 <= cedis['longitud'] <= -86.0:
                         return cedis
 
-            except (ValueError, TypeError):
+            except Exception as e:
+                logger.warning(f"❌ Error procesando CEDIS {cedis_id_raw}: {e}")
                 continue
 
+        logger.warning(f"❌ CEDIS no encontrado: {cedis_id}")
         return None
 
     def find_cedis_for_coverage(self, estado_destino: str) -> List[Dict[str, Any]]:
         """🗺️ Encuentra CEDIS que cubren un estado"""
         df = self.load_data()
-
-        # Filtrar CEDIS que cubren el estado o todos los estados
         cedis_list = []
 
         for cedis in df.to_dicts():
             try:
-                # Verificar que cedis_id sea válido
-                cedis_id = str(cedis.get('cedis_id', ''))
-                if not cedis_id or cedis_id.startswith('(') or len(cedis_id) < 2:
+                # Limpiar cedis_id
+                cedis_id_raw = cedis.get('cedis_id', '')
+                cedis_id_clean = self._clean_id_value(cedis_id_raw)
+
+                if not cedis_id_clean:
                     continue
 
                 cobertura = str(cedis.get('cobertura_estados', ''))
@@ -235,35 +281,23 @@ class CEDISRepository(BaseRepository):
                         'nacional' in cobertura.lower() or
                         'todos' in cobertura.lower()):
 
-                    # Validar coordenadas
-                    lat = cedis.get('latitud', 0)
-                    lon = cedis.get('longitud', 0)
+                    # Limpiar coordenadas
+                    lat = self._clean_coordinate_value(cedis.get('latitud'))
+                    lon = self._clean_coordinate_value(cedis.get('longitud'))
 
-                    # Limpiar coordenadas si están mal formateadas
-                    if isinstance(lat, str):
-                        lat_clean = lat.replace('(', '').replace(')', '').strip()
-                        if lat_clean and lat_clean.replace('.', '').replace('-', '').isdigit():
-                            lat = float(lat_clean)
-                        else:
-                            continue
-
-                    if isinstance(lon, str):
-                        lon_clean = lon.replace('(', '').replace(')', '').strip()
-                        if lon_clean and lon_clean.replace('.', '').replace('-', '').isdigit():
-                            lon = float(lon_clean)
-                        else:
-                            continue
-
-                    # Validar rangos para México
+                    # Validar coordenadas para México
                     if 14.0 <= lat <= 33.0 and -118.0 <= lon <= -86.0:
-                        cedis['latitud'] = lat
-                        cedis['longitud'] = lon
-                        cedis_list.append(cedis)
+                        cedis_clean = cedis.copy()
+                        cedis_clean['cedis_id'] = cedis_id_clean
+                        cedis_clean['latitud'] = lat
+                        cedis_clean['longitud'] = lon
+                        cedis_list.append(cedis_clean)
 
-            except (ValueError, TypeError) as e:
-                logger.warning(f"❌ Error procesando CEDIS {cedis.get('cedis_id', 'unknown')}: {e}")
+            except Exception as e:
+                logger.warning(f"❌ Error procesando CEDIS {cedis_id_raw}: {e}")
                 continue
 
+        logger.info(f"🏭 Encontrados {len(cedis_list)} CEDIS para {estado_destino}")
         return cedis_list
 
 
@@ -285,7 +319,12 @@ class StockRepository(BaseRepository):
 
         stock_locations = []
         for location in stock_df.to_dicts():
-            if location['stock_disponible'] >= settings.MIN_STOCK_THRESHOLD:
+            # Limpiar tienda_id
+            tienda_id_raw = location.get('tienda_id', '')
+            tienda_id_clean = self._clean_id_value(tienda_id_raw)
+
+            if tienda_id_clean and location['stock_disponible'] >= settings.MIN_STOCK_THRESHOLD:
+                location['tienda_id'] = tienda_id_clean
                 stock_locations.append(location)
 
         logger.info(f"📦 Stock disponible para {sku_id}: {len(stock_locations)} ubicaciones")
@@ -300,11 +339,17 @@ class StockRepository(BaseRepository):
             return {
                 'es_factible': False,
                 'razon': 'Sin stock disponible',
-                'split_plan': []
+                'split_plan': [],
+                'cantidad_cubierta': 0,
+                'cantidad_faltante': cantidad_requerida
             }
 
-        # Ordenar ubicaciones por cercanía al destino
-        ubicaciones_dict = {loc['tienda_id']: loc for loc in ubicaciones_cercanas}
+        # Crear diccionario de ubicaciones cercanas por ID limpio
+        ubicaciones_dict = {}
+        for loc in ubicaciones_cercanas:
+            clean_id = self._clean_id_value(loc.get('tienda_id', ''))
+            if clean_id:
+                ubicaciones_dict[clean_id] = loc
 
         split_plan = []
         cantidad_pendiente = cantidad_requerida
@@ -334,16 +379,17 @@ class StockRepository(BaseRepository):
                 break
 
         es_factible = cantidad_pendiente <= 0
+        cantidad_cubierta = cantidad_requerida - cantidad_pendiente
 
         logger.info(f"🔄 Split calculado para {sku_id}: "
                     f"{len(split_plan)} ubicaciones, factible: {es_factible}")
 
         return {
             'es_factible': es_factible,
-            'cantidad_cubierta': cantidad_requerida - cantidad_pendiente,
+            'cantidad_cubierta': cantidad_cubierta,
             'cantidad_faltante': cantidad_pendiente,
             'split_plan': split_plan,
-            'razon': 'Split exitoso' if es_factible else 'Stock insuficiente'
+            'razon': 'Split exitoso' if es_factible else f'Stock insuficiente (faltan {cantidad_pendiente})'
         }
 
 
@@ -354,90 +400,80 @@ class PostalCodeRepository(BaseRepository):
         return self._load_with_cache(settings.CSV_FILES['codigos_postales'])
 
     def get_postal_code_info(self, codigo_postal: str) -> Optional[Dict[str, Any]]:
-        """🔍 Obtiene información de código postal"""
+        """🔍 Obtiene información de código postal mejorado"""
         df = self.load_data()
 
         try:
             cp_int = int(codigo_postal)
+        except ValueError:
+            logger.warning(f"❌ CP inválido: {codigo_postal}")
+            return None
 
-            # El CSV tiene "rango_cp", no "codigo_postal"
-            # Buscar en rango_cp que contenga el código postal
-            result = None
-
-            # Intentar buscar por rango_cp que contenga el CP
-            for row in df.to_dicts():
-                rango_cp = str(row.get('rango_cp', ''))
+        # Buscar en rangos
+        for row in df.to_dicts():
+            try:
+                rango_cp = str(row.get('rango_cp', '')).strip()
 
                 # Limpiar el rango_cp de caracteres problemáticos
-                rango_cp_clean = rango_cp.replace('(', '').replace(')', '').strip()
+                rango_cp_clean = self._clean_id_value(rango_cp)
 
-                # Verificar si el CP está en el rango
+                # Buscar por rango o CP exacto
                 if '-' in rango_cp_clean:
-                    try:
-                        parts = rango_cp_clean.split('-')
-                        if len(parts) == 2:
-                            start_part = parts[0].strip()
-                            end_part = parts[1].strip()
-
-                            # Validar que las partes sean números válidos
-                            if (start_part.isdigit() and end_part.isdigit() and
-                                    len(start_part) <= 5 and len(end_part) <= 5):
-
-                                start_cp = int(start_part)
-                                end_cp = int(end_part)
-
-                                if start_cp <= cp_int <= end_cp:
-                                    result = row
-                                    break
-                    except (ValueError, IndexError):
-                        continue
-                elif rango_cp_clean.isdigit() and len(rango_cp_clean) <= 5:
-                    if int(rango_cp_clean) == cp_int:
-                        result = row
-                        break
-
-            if result:
-                # Limpiar coordenadas si tienen formato problemático
-                for coord_field in ['latitud', 'longitud', 'latitud_centro', 'longitud_centro']:
-                    if coord_field in result and result[coord_field]:
-                        coord_value = str(result[coord_field])
-                        # Limpiar paréntesis, espacios y caracteres extraños
-                        coord_clean = coord_value.replace('(', '').replace(')', '').replace(' ', '').strip()
+                    parts = rango_cp_clean.split('-')
+                    if len(parts) == 2:
                         try:
-                            if coord_clean and coord_clean.replace('.', '').replace('-', '').isdigit():
-                                coord_float = float(coord_clean)
-                                # Validar rango de coordenadas para México
-                                if coord_field.startswith('latitud') and 14.0 <= coord_float <= 33.0:
-                                    result[coord_field] = coord_float
-                                elif coord_field.startswith('longitud') and -118.0 <= coord_float <= -86.0:
-                                    result[coord_field] = coord_float
-                                else:
-                                    raise ValueError("Coordenada fuera de rango México")
-                            else:
-                                raise ValueError("Formato de coordenada inválido")
-                        except (ValueError, TypeError):
-                            logger.warning(f"⚠️ Coordenada inválida en {coord_field}: {coord_value}")
-                            # Usar coordenadas por defecto para CDMX si falla
-                            if 'latitud' in coord_field:
-                                result[coord_field] = 19.4326
-                            else:
-                                result[coord_field] = -99.1332
+                            start_cp = int(parts[0].strip())
+                            end_cp = int(parts[1].strip())
 
-                return result
+                            if start_cp <= cp_int <= end_cp:
+                                return self._process_postal_info(row)
+                        except ValueError:
+                            continue
+                elif rango_cp_clean.isdigit():
+                    if int(rango_cp_clean) == cp_int:
+                        return self._process_postal_info(row)
 
-        except ValueError as e:
-            logger.warning(f"❌ Error procesando CP {codigo_postal}: {e}")
+            except Exception as e:
+                logger.warning(f"❌ Error procesando rango CP {rango_cp}: {e}")
+                continue
 
-        logger.warning(f"❌ Información de CP no encontrada: {codigo_postal}")
-        return None
+        # Si no se encuentra, crear entrada por defecto para CDMX
+        logger.warning(f"❌ CP no encontrado: {codigo_postal}, usando default CDMX")
+        return {
+            'rango_cp': codigo_postal,
+            'estado_alcaldia': 'Ciudad de México',
+            'zona_seguridad': 'Media',
+            'latitud_centro': 19.4326,
+            'longitud_centro': -99.1332,
+            'cobertura_liverpool': True,
+            'tiempo_entrega_base_horas': '24-48',
+            'observaciones': 'Default CDMX'
+        }
+
+    def _process_postal_info(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        """🔧 Procesa información de CP limpiando coordenadas"""
+        processed = row.copy()
+
+        # Limpiar coordenadas
+        processed['latitud_centro'] = self._clean_coordinate_value(row.get('latitud_centro'))
+        processed['longitud_centro'] = self._clean_coordinate_value(row.get('longitud_centro'))
+
+        # Si las coordenadas están fuera de rango, usar CDMX como fallback
+        if not (14.0 <= processed['latitud_centro'] <= 33.0 and
+                -118.0 <= processed['longitud_centro'] <= -86.0):
+            logger.warning(f"⚠️ Coordenadas fuera de México, usando CDMX")
+            processed['latitud_centro'] = 19.4326
+            processed['longitud_centro'] = -99.1332
+
+        return processed
 
     def is_zona_roja(self, codigo_postal: str) -> bool:
         """🚨 Detecta zona roja"""
         cp_info = self.get_postal_code_info(codigo_postal)
         if not cp_info:
-            return True  # Precaución si no conocemos el CP
+            return False  # Si no conocemos el CP, asumimos zona segura
 
-        zona_seguridad = cp_info.get('zona_seguridad', '').lower()
+        zona_seguridad = str(cp_info.get('zona_seguridad', '')).lower()
         return zona_seguridad in ['roja', 'alta', 'crítica']
 
 
@@ -451,7 +487,11 @@ class ClimateRepository(BaseRepository):
                                    fecha: datetime) -> Dict[str, Any]:
         """🌡️ Obtiene datos climáticos por CP y fecha"""
         df = self.load_data()
-        cp_int = int(codigo_postal)
+
+        try:
+            cp_int = int(codigo_postal)
+        except ValueError:
+            return self._get_default_climate(fecha)
 
         # Buscar en rangos de CP
         climate_data = df.filter(
@@ -460,16 +500,22 @@ class ClimateRepository(BaseRepository):
         )
 
         if climate_data.height == 0:
-            # Datos por defecto si no se encuentra
-            return {
-                'clima_actual': 'Templado',
-                'temperatura': 22,
-                'precipitacion_mm': 30,
-                'factor_clima': 1.0
-            }
+            return self._get_default_climate(fecha)
 
         clima_dict = climate_data.to_dicts()[0]
+        return self._process_climate_data(clima_dict, fecha)
 
+    def _get_default_climate(self, fecha: datetime) -> Dict[str, Any]:
+        """🌡️ Clima por defecto"""
+        return {
+            'clima_actual': 'Templado',
+            'temperatura': 22,
+            'precipitacion_mm': 30,
+            'factor_clima': 1.0
+        }
+
+    def _process_climate_data(self, clima_dict: Dict[str, Any], fecha: datetime) -> Dict[str, Any]:
+        """🌡️ Procesa datos climáticos"""
         # Determinar temporada
         mes = fecha.month
         if mes in [12, 1, 2]:
@@ -520,7 +566,7 @@ class ExternalFactorsRepository(BaseRepository):
         """🤖 Genera factores automáticamente si no hay datos"""
         from utils.temporal_detector import TemporalFactorDetector
 
-        detected_factors = TemporalFactorDetector.detect_seasonal_factors(fecha)
+        detected_factors = TemporalFactorDetector.detect_comprehensive_factors(fecha, codigo_postal)
 
         logger.info(f"🤖 Factores auto-generados para {fecha.date()}")
 
@@ -532,7 +578,7 @@ class ExternalFactorsRepository(BaseRepository):
             'condicion_clima': detected_factors['condicion_clima'],
             'trafico_nivel': detected_factors['trafico_nivel'],
             'rango_cp_afectado': codigo_postal[:2] + '000-' + codigo_postal[:2] + '999',
-            'impacto_tiempo_extra_horas': detected_factors['impacto_tiempo_extra'],
+            'impacto_tiempo_extra_horas': detected_factors['impacto_tiempo_extra_horas'],
             'criticidad_logistica': detected_factors['criticidad_logistica']
         }
 
@@ -547,7 +593,11 @@ class ExternalFleetRepository(BaseRepository):
                                peso_kg: float) -> List[Dict[str, Any]]:
         """📋 Obtiene carriers disponibles para CP y peso"""
         df = self.load_data()
-        cp_int = int(codigo_postal)
+
+        try:
+            cp_int = int(codigo_postal)
+        except ValueError:
+            return []
 
         # Filtrar carriers activos que cubren la zona y peso
         carriers = df.filter(
