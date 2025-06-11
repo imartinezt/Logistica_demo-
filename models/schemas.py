@@ -4,9 +4,6 @@ from typing import Optional, List, Dict, Any, Union
 from enum import Enum
 
 
-# =====================================
-# ENUMS
-# =====================================
 
 class TipoEntregaEnum(str, Enum):
     FLASH = "FLASH"
@@ -27,9 +24,6 @@ class EstadoRutaEnum(str, Enum):
     CONDICIONAL = "CONDICIONAL"
 
 
-# =====================================
-# REQUEST/RESPONSE SCHEMAS
-# =====================================
 
 class PredictionRequest(BaseModel):
     """📥 Request para predicción FEE"""
@@ -49,10 +43,6 @@ class PredictionRequest(BaseModel):
             raise ValueError('Código postal debe ser numérico')
         return v
 
-
-# =====================================
-# INVENTORY & SPLIT SCHEMAS
-# =====================================
 
 class UbicacionStock(BaseModel):
     """📦 Stock en una ubicación específica"""
@@ -79,10 +69,6 @@ class SplitInventory(BaseModel):
     razon_split: str = Field(..., description="Por qué se hace el split")
 
 
-# =====================================
-# ROUTE & LOGISTICS SCHEMAS
-# =====================================
-
 class Segmento(BaseModel):
     """🚚 Segmento individual de una ruta"""
     segmento_id: str = Field(..., description="ID único del segmento")
@@ -108,7 +94,7 @@ class RutaCompleta(BaseModel):
         None, description="Info de split si aplica"
     )
 
-    # Métricas consolidadas
+    # Métricas
     tiempo_total_horas: float = Field(..., ge=0, description="Tiempo total")
     costo_total_mxn: float = Field(..., ge=0, description="Costo total")
     distancia_total_km: float = Field(..., ge=0, description="Distancia total")
@@ -125,9 +111,6 @@ class RutaCompleta(BaseModel):
     factores_riesgo: List[str] = Field(default_factory=list)
 
 
-# =====================================
-# EXTERNAL FACTORS SCHEMAS
-# =====================================
 
 class FactoresExternos(BaseModel):
     """🌤️ Factores externos detectados y calculados"""
@@ -160,10 +143,6 @@ class FactoresExternos(BaseModel):
     )
 
 
-# =====================================
-# OPTIMIZATION & ML SCHEMAS
-# =====================================
-
 class CandidatoRuta(BaseModel):
     """🎯 Candidato generado por LightGBM"""
     ruta: RutaCompleta = Field(..., description="Ruta completa")
@@ -189,9 +168,6 @@ class DecisionGemini(BaseModel):
     alertas_gemini: List[str] = Field(default_factory=list)
 
 
-# =====================================
-# FINAL RESPONSE SCHEMA
-# =====================================
 
 class FEECalculation(BaseModel):
     """🗓️ Cálculo final de FEE"""
@@ -211,25 +187,18 @@ class FEECalculation(BaseModel):
 class ExplicabilidadCompleta(BaseModel):
     """📊 Explicabilidad completa del proceso"""
 
-    # Datos de entrada
+
     request_procesado: PredictionRequest = Field(..., description="Request original")
     factores_externos: FactoresExternos = Field(..., description="Factores detectados")
-
-    # Split de inventario si aplica
     split_inventory: Optional[SplitInventory] = Field(None)
 
-    # Proceso de optimización
     candidatos_lightgbm: List[CandidatoRuta] = Field(
         ..., description="Candidatos generados por ML"
     )
     decision_gemini: DecisionGemini = Field(
         ..., description="Decisión final de Gemini"
     )
-
-    # Métricas finales
     fee_calculation: FEECalculation = Field(..., description="Cálculo FEE")
-
-    # Performance y debugging
     tiempo_procesamiento_ms: float = Field(..., ge=0)
     warnings: List[str] = Field(default_factory=list)
     debug_info: Dict[str, Any] = Field(default_factory=dict)
@@ -238,23 +207,22 @@ class ExplicabilidadCompleta(BaseModel):
 class PredictionResponse(BaseModel):
     """📤 Respuesta final del sistema"""
 
-    # Resultado principal
     fecha_entrega_estimada: datetime = Field(..., description="FEE final")
     rango_horario: Dict[str, str] = Field(
         ..., description="Rango de horario de entrega"
     )
 
-    # Información logística
+
     ruta_seleccionada: RutaCompleta = Field(..., description="Ruta ganadora")
     tipo_entrega: TipoEntregaEnum = Field(..., description="Tipo de entrega")
     carrier_principal: str = Field(..., description="Carrier responsable")
 
-    # Costos y métricas
+
     costo_envio_mxn: float = Field(..., ge=0, description="Costo total")
     probabilidad_cumplimiento: float = Field(..., ge=0, le=1)
     confianza_prediccion: float = Field(..., ge=0, le=1)
 
-    # Explicabilidad
+
     explicabilidad: ExplicabilidadCompleta = Field(
         ..., description="Explicabilidad completa"
     )
@@ -262,37 +230,3 @@ class PredictionResponse(BaseModel):
     # Metadatos
     timestamp_response: datetime = Field(default_factory=datetime.now)
     version_sistema: str = Field(default="3.0.0")
-
-
-# =====================================
-# ERROR HANDLING SCHEMAS
-# =====================================
-
-class ErrorDetail(BaseModel):
-    """❌ Detalle de error específico"""
-    error_code: str = Field(..., description="Código único del error")
-    error_type: str = Field(..., description="Tipo de error")
-    message: str = Field(..., description="Mensaje legible")
-    field: Optional[str] = Field(None, description="Campo que causó el error")
-    suggestion: Optional[str] = Field(None, description="Sugerencia de resolución")
-
-
-class ErrorResponse(BaseModel):
-    """💥 Respuesta de error estructurada"""
-    success: bool = Field(default=False)
-    errors: List[ErrorDetail] = Field(..., description="Lista de errores")
-    request_id: Optional[str] = Field(None, description="ID para debugging")
-    timestamp: datetime = Field(default_factory=datetime.now)
-    debug_trace: Optional[Dict[str, Any]] = Field(None)
-
-
-# =====================================
-# VALIDATION HELPERS
-# =====================================
-
-class ValidationResult(BaseModel):
-    """✅ Resultado de validación"""
-    is_valid: bool = Field(..., description="Si es válido")
-    errors: List[str] = Field(default_factory=list)
-    warnings: List[str] = Field(default_factory=list)
-    data_processed: Optional[Dict[str, Any]] = Field(None)

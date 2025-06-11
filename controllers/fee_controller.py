@@ -8,8 +8,6 @@ from services.fee_prediction_service import FEEPredictionService
 from utils.logger import logger
 
 router = APIRouter(prefix="/api/v1", tags=["🎯 Liverpool FEE System"])
-
-# Global service instance
 _fee_service: FEEPredictionService = None
 
 
@@ -27,20 +25,7 @@ async def predict_delivery_fee(
         service: FEEPredictionService = Depends(get_fee_service)
 ):
     """
-    🎯 **PREDICCIÓN INTELIGENTE FEE - MOTOR HÍBRIDO LightGBM + Gemini**
-
-    **Arquitectura:**
-    - 🤖 **LightGBM**: Optimización multiobjetivo de rutas candidatas
-    - 🧠 **Gemini 2.0**: Decisión final inteligente con explicabilidad
-    - 📊 **Polars**: Procesamiento ultra-rápido de datos
-    - 🌍 **PyProj**: Cálculos geoespaciales precisos México
-
-    **Casos Resueltos:**
-    - ✅ Split de inventario entre múltiples ubicaciones
-    - ✅ Rutas híbridas flota interna + externa  
-    - ✅ Auto-detección eventos: Navidad, Buen Fin, clima
-    - ✅ Zonas rojas con restricciones automáticas
-    - ✅ Optimización tiempo ↔ costo ↔ confiabilidad
+     PREDICCIÓN INTELIGENTE FEE - MOTOR HÍBRIDO LightGBM + Gemini
     """
 
     start_time = time.time()
@@ -53,9 +38,7 @@ async def predict_delivery_fee(
             cantidad=request.cantidad
         )
 
-        # 🎯 Ejecutar predicción con arquitectura híbrida
         resultado = await service.predict_fee(request)
-
         processing_time = (time.time() - start_time) * 1000
 
         logger.info(

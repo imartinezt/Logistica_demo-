@@ -1,20 +1,19 @@
+import time
+
+import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-import time
-import uvicorn
-from datetime import datetime
 
 from config.settings import settings
 from controllers.fee_controller import router as fee_router
 from utils.logger import setup_logging, logger
-
 
 setup_logging()
 
 app = FastAPI(
     title=f"🎯 {settings.APP_NAME}",
     version=settings.VERSION,
-    description="Sistema inteligente de predicción FEE con LightGBM + Gemini 2.0",
+    description="Logistica: Iván Martínez Trejo",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -28,7 +27,6 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-# Request timing middleware
 @app.middleware("http")
 async def add_process_time_header(request: Request, call_next):
     start_time = time.time()
@@ -37,22 +35,9 @@ async def add_process_time_header(request: Request, call_next):
     response.headers["X-Process-Time"] = str(process_time)
     return response
 
-# Include router
 app.include_router(fee_router)
 
-@app.get("/")
-async def root():
-    """🏠 Liverpool FEE Predictor"""
-    return {
-        "sistema": "Liverpool FEE Predictor",
-        "version": settings.VERSION,
-        "motor": "LightGBM + Gemini 2.0",
-        "estado": "✅ Operativo",
-        "timestamp": datetime.now(),
-        "endpoint": "/api/v1/fee/predict"
-    }
 
-# Startup event
 @app.on_event("startup")
 async def startup_event():
     logger.info(

@@ -4,18 +4,11 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    """🎯 Configuración REALISTA del sistema Liverpool FEE"""
+    """🎯 Configuración sistema Liverpool FEE"""
 
-    # ------------------------------------------------------------------
-    # App metadata
-    # ------------------------------------------------------------------
     APP_NAME: str = "Liverpool FEE Predictor Advanced"
     VERSION: str = "3.0.0"
     DEBUG: bool = False
-
-    # ------------------------------------------------------------------
-    # Paths
-    # ------------------------------------------------------------------
     BASE_DIR: Path = Path(__file__).parent.parent
     DATA_DIR: Path = BASE_DIR / "data"
     MODELS_DIR: Path = BASE_DIR / "models"
@@ -33,20 +26,16 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     HORARIO_CORTE_FLASH: int = 12  # FLASH: compra antes de 12h para entrega mismo día
     HORARIO_CORTE_EXPRESS: int = 20  # EXPRESS: compra antes de 8pm para entrega siguiente día
-    TIEMPO_PICKING_PACKING: float = 1.0  # 1 hora realista para picking/packing
+    TIEMPO_PICKING_PACKING: float = 1.0  # 1 hora para picking/packing
     TIEMPO_PREPARACION_CEDIS: float = 2.0  # 2 horas para CEDIS (incluye cross-dock)
 
     # ------------------------------------------------------------------
-    # Multi-objective optimization weights AJUSTADOS
+    # Multi-objective weights
     # ------------------------------------------------------------------
     PESO_TIEMPO: float = 0.40  # Prioridad alta al tiempo
     PESO_COSTO: float = 0.20  # Menor peso al costo (no filtrar por límites)
     PESO_PROBABILIDAD: float = 0.35  # Alta prioridad a confiabilidad
     PESO_DISTANCIA: float = 0.05  # Menor importancia a distancia pura
-
-    # ------------------------------------------------------------------
-    # LightGBM configuration (optimizado)
-    # ------------------------------------------------------------------
     LIGHTGBM_PARAMS: Dict[str, Any] = {
         'objective': 'ranking',
         'metric': 'ndcg',
@@ -62,7 +51,7 @@ class Settings(BaseSettings):
     }
 
     # ------------------------------------------------------------------
-    # Route optimization thresholds REALISTAS
+    # Route thresholds
     # ------------------------------------------------------------------
     MAX_CANDIDATOS_LIGHTGBM: int = 20  # Menos candidatos, más inteligentes
     TOP_CANDIDATOS_GEMINI: int = 5  # Top 5 para Gemini
@@ -70,7 +59,7 @@ class Settings(BaseSettings):
     MIN_STOCK_THRESHOLD: int = 1  # Mínimo 1 unidad para considerar
 
     # ------------------------------------------------------------------
-    # Geospatial configuration REALISTA
+    # Geospatial
     # ------------------------------------------------------------------
     EARTH_RADIUS_KM: float = 6371.0
     MAX_DISTANCE_KM: float = 1500.0  # México: máximo 1500km (realista)
@@ -78,7 +67,7 @@ class Settings(BaseSettings):
     SPEED_FLOTA_EXTERNA_KMH: float = 35.0  # Velocidad promedio realista FE
 
     # ------------------------------------------------------------------
-    # External factors multipliers BALANCEADOS
+    # Factores externos
     # ------------------------------------------------------------------
     FACTOR_MULTIPLIERS: Dict[str, Dict[str, float]] = {
         'temporada_alta': {
@@ -108,9 +97,6 @@ class Settings(BaseSettings):
         }
     }
 
-    # ------------------------------------------------------------------
-    # CSV mappings to files
-    # ------------------------------------------------------------------
     CSV_FILES: Dict[str, str] = {
         'productos': 'productos_liverpool_50.csv',
         'tiendas': 'liverpool_tiendas_completo.csv',
@@ -122,9 +108,6 @@ class Settings(BaseSettings):
         'flota_externa': 'flota_externa_costos_reales.csv'
     }
 
-    # ------------------------------------------------------------------
-    # Seasonal events detection REALISTAS (factores del CSV)
-    # ------------------------------------------------------------------
     EVENTOS_TEMPORADA: Dict[int, List[Dict[str, Any]]] = {
         12: [
             {'evento': 'Pre_Navidad', 'factor_demanda': 2.0, 'dias': [15, 19]},
@@ -148,9 +131,6 @@ class Settings(BaseSettings):
         ]
     }
 
-    # ------------------------------------------------------------------
-    # Delivery type rules REALISTAS
-    # ------------------------------------------------------------------
     DELIVERY_RULES: Dict[str, Dict[str, Any]] = {
         'FLASH': {
             'max_horas': 8,  # 8 horas máximo (mismo día)
@@ -182,9 +162,6 @@ class Settings(BaseSettings):
         }
     }
 
-    # ------------------------------------------------------------------
-    # Performance thresholds REALISTAS
-    # ------------------------------------------------------------------
     PERFORMANCE_THRESHOLDS: Dict[str, float] = {
         'max_processing_time_seconds': 15.0,  # 15 segundos máximo
         'min_confidence_score': 0.65,  # 65% confianza mínima
@@ -192,9 +169,6 @@ class Settings(BaseSettings):
         'cache_ttl_minutes': 30  # Cache 30 minutos
     }
 
-    # ------------------------------------------------------------------
-    # Validation thresholds REALISTAS (sin límites arbitrarios de costo)
-    # ------------------------------------------------------------------
     VALIDATION_THRESHOLDS: Dict[str, float] = {
         'min_probability_threshold': 0.60,  # 60% probabilidad mínima
         'max_time_hours': 168.0,  # 7 días máximo absoluto
@@ -206,9 +180,6 @@ class Settings(BaseSettings):
         # sin rechazar por costo alto
     }
 
-    # ------------------------------------------------------------------
-    # Error handling configuration
-    # ------------------------------------------------------------------
     ERROR_HANDLING: Dict[str, Any] = {
         'max_retries': 3,
         'timeout_seconds': 12.0,  # Timeout más alto para Gemini
@@ -217,9 +188,6 @@ class Settings(BaseSettings):
         'log_all_errors': True
     }
 
-    # ------------------------------------------------------------------
-    # Feature flags OPTIMIZADOS
-    # ------------------------------------------------------------------
     FEATURE_FLAGS: Dict[str, bool] = {
         'enable_gemini_analysis': True,
         'enable_split_inventory': True,
@@ -235,9 +203,6 @@ class Settings(BaseSettings):
         'enable_real_csv_factors': True  # Usar factores reales del CSV
     }
 
-    # ------------------------------------------------------------------
-    # Operational limits REALISTAS
-    # ------------------------------------------------------------------
     OPERATIONAL_LIMITS: Dict[str, int] = {
         'max_concurrent_requests': 25,  # Límite realista
         'max_candidates_generated': 20,  # Menos candidatos, más inteligentes
@@ -250,7 +215,7 @@ class Settings(BaseSettings):
     }
 
     # ------------------------------------------------------------------
-    # Business logic constants MÉXICO
+    # Logica de negocio lIVER
     # ------------------------------------------------------------------
     BUSINESS_CONSTANTS: Dict[str, Any] = {
         # Horarios operativos
@@ -283,7 +248,7 @@ class Settings(BaseSettings):
     }
 
     # ------------------------------------------------------------------
-    # FEE Calculation formulas MEJORADAS
+    # FEE
     # ------------------------------------------------------------------
     FEE_FORMULAS: Dict[str, Dict[str, Any]] = {
         'FLASH': {

@@ -12,7 +12,7 @@ from utils.logger import logger
 
 
 class BaseRepository(ABC):
-    """📊 Repositorio base con Polars y cache inteligente"""
+    """ Repositorio base """
 
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
@@ -21,7 +21,7 @@ class BaseRepository(ABC):
         self.cache_ttl = settings.PERFORMANCE_THRESHOLDS['cache_ttl_minutes'] * 60
 
     def _load_with_cache(self, filename: str, force_reload: bool = False) -> pl.DataFrame:
-        """🔄 Carga CSV con cache automático"""
+        """ Carga CSV con cache automático"""
         current_time = time.time()
 
         if (force_reload or
@@ -42,8 +42,9 @@ class BaseRepository(ABC):
 
         return self._cache[filename]
 
-    def _clean_coordinate_value(self, value: Any) -> float:
-        """🧹 Limpia valores de coordenadas problemáticos"""
+    @staticmethod
+    def _clean_coordinate_value(value: Any) -> float:
+        """ Limpia valores de coordenadas """
         if value is None:
             return 0.0
 
@@ -57,8 +58,9 @@ class BaseRepository(ABC):
             logger.warning(f"⚠️ Coordenada inválida: {value} -> usando 0.0")
             return 0.0
 
-    def _clean_id_value(self, value: Any) -> str:
-        """🧹 Limpia valores de ID problemáticos"""
+    @staticmethod
+    def _clean_id_value(value: Any) -> str:
+        """ Limpia valores de ID """
         if value is None:
             return ""
 
@@ -70,13 +72,13 @@ class BaseRepository(ABC):
 
 
 class StoreRepository(BaseRepository):
-    """🏪 Repositorio OPTIMIZADO de tiendas Liverpool"""
+    """ Repositorio tiendas Liverpool"""
 
     def load_data(self) -> pl.DataFrame:
         return self._load_with_cache(settings.CSV_FILES['tiendas'])
 
     def get_store_by_id(self, tienda_id: str) -> Optional[Dict[str, Any]]:
-        """🔍 Busca tienda por ID con limpieza robusta"""
+        """ Busca tienda por ID """
         df = self.load_data()
         clean_search_id = self._clean_id_value(tienda_id)
 
@@ -105,10 +107,9 @@ class StoreRepository(BaseRepository):
 
     def find_stores_by_postal_code_range(self, codigo_postal: str,
                                          max_distance_km: float = 100.0) -> List[Dict[str, Any]]:
-        """📍 OPTIMIZADO: Encuentra tiendas cercanas por código postal"""
+        """ Encuentra tiendas cercanas por código postal"""
         from utils.geo_calculator import GeoCalculator
 
-        # Obtener coordenadas del CP destino
         postal_repo = PostalCodeRepository(self.data_dir)
         cp_info = postal_repo.get_postal_code_info(codigo_postal)
 
@@ -118,12 +119,9 @@ class StoreRepository(BaseRepository):
 
         cp_lat = cp_info.get('latitud_centro', 19.4326)
         cp_lon = cp_info.get('longitud_centro', -99.1332)
-
-        # OPTIMIZACIÓN: Pre-filtrar por región si es posible
         stores_list = self._get_stores_by_region_first(codigo_postal[:2])
 
         if not stores_list:
-            # Si no hay filtro por región, cargar todas
             df = self.load_data()
             stores_list = df.to_dicts()
 
@@ -162,7 +160,6 @@ class StoreRepository(BaseRepository):
                 logger.warning(f"❌ Error procesando tienda {tienda_id_raw}: {e}")
                 continue
 
-        # Ordenar por distancia
         nearby_stores.sort(key=lambda x: x['distancia_km'])
 
         logger.info(f"📍 Encontradas {len(nearby_stores)} tiendas cercanas a {codigo_postal} "
@@ -170,9 +167,8 @@ class StoreRepository(BaseRepository):
         return nearby_stores
 
     def _get_stores_by_region_first(self, cp_prefix: str) -> List[Dict[str, Any]]:
-        """🗺️ Pre-filtro por región para optimizar búsqueda"""
+        """ Pre-filtro por región para optimizar búsqueda"""
 
-        # Mapeo de prefijos CP a regiones conocidas
         region_filters = {
             '01': 'CDMX',
             '02': 'CDMX',
@@ -198,8 +194,6 @@ class StoreRepository(BaseRepository):
 
         try:
             df = self.load_data()
-
-            # Si tenemos columna de región/estado, filtrar
             if 'estado' in df.columns:
                 filtered_df = df.filter(
                     pl.col('estado').str.contains(target_region)
@@ -207,8 +201,6 @@ class StoreRepository(BaseRepository):
                 if filtered_df.height > 0:
                     logger.info(f"📍 Pre-filtrado por región {target_region}: {filtered_df.height} tiendas")
                     return filtered_df.to_dicts()
-
-            # Si no hay columna de región, no filtrar
             return []
 
         except Exception as e:
@@ -224,18 +216,12 @@ class StockRepository(BaseRepository):
 
     def get_stock_locations_optimized(self, sku_id: str, cantidad_requerida: int,
                                       nearby_store_ids: List[str] = None) -> List[Dict[str, Any]]:
-        """📋 OPTIMIZADO: Obtiene stock SOLO en tiendas cercanas"""
+        """ Obtiene stock SOLO en tiendas cercanas"""
 
         df = self.load_data()
-
-        # OPTIMIZACIÓN: Si tenemos IDs de tiendas cercanas, filtrar primero
         if nearby_store_ids:
-            # Crear lista de IDs limpios para comparación
             clean_nearby_ids = [self._clean_id_value(store_id) for store_id in nearby_store_ids]
-
-            # Filtrar por SKU y tiendas cercanas
             stock_df = df.filter(pl.col('sku_id') == sku_id)
-
             nearby_stock = []
             for stock_row in stock_df.to_dicts():
                 clean_tienda_id = self._clean_id_value(stock_row.get('tienda_id', ''))
@@ -249,8 +235,6 @@ class StockRepository(BaseRepository):
 
             logger.info(f"📦 Stock en tiendas cercanas para {sku_id}: {len(nearby_stock)} ubicaciones")
             return nearby_stock
-
-        # Si no hay filtro de tiendas cercanas, buscar en todas (método original)
         return self.get_stock_locations(sku_id, cantidad_requerida)
 
     def get_stock_locations(self, sku_id: str, cantidad_requerida: int) -> List[Dict[str, Any]]:
@@ -278,14 +262,12 @@ class StockRepository(BaseRepository):
                                         nearby_stores: List[Dict[str, Any]]) -> Dict[str, Any]:
         """🧠 SPLIT INTELIGENTE: evalúa opciones reales optimizado"""
 
-        # Obtener stock SOLO en tiendas cercanas
         nearby_store_ids = [store['tienda_id'] for store in nearby_stores]
         stock_locations = self.get_stock_locations_optimized(
             sku_id, cantidad_requerida, nearby_store_ids
         )
 
         if not stock_locations:
-            # Crear un split_inventory vacío para mantener consistencia
             from models.schemas import SplitInventory
 
             empty_split_inventory = SplitInventory(
@@ -299,17 +281,15 @@ class StockRepository(BaseRepository):
             return {
                 'es_factible': False,
                 'razon': 'Sin stock disponible en tiendas cercanas',
-                'split_inventory': empty_split_inventory,  # ✅ Consistente
+                'split_inventory': empty_split_inventory,
                 'split_plan': [],
                 'cantidad_cubierta': 0,
                 'cantidad_faltante': cantidad_requerida,
                 'opciones_evaluadas': 0
             }
 
-        # Crear diccionario de distancias para acceso rápido
         distance_map = {store['tienda_id']: store['distancia_km'] for store in nearby_stores}
 
-        # OPCIÓN 1: Tienda única con suficiente stock
         single_store_options = []
         for stock_loc in stock_locations:
             if stock_loc['stock_disponible'] >= cantidad_requerida:
@@ -324,19 +304,15 @@ class StockRepository(BaseRepository):
                     'eficiencia_score': self._calculate_efficiency_score(cantidad_requerida, distance, 1)
                 })
 
-        # OPCIÓN 2: Split entre múltiples tiendas (máximo 3)
         multi_store_options = []
         if len(stock_locations) > 1:
             split_combinations = self._generate_split_combinations(
                 stock_locations, cantidad_requerida, distance_map, max_stores=3
             )
             multi_store_options.extend(split_combinations)
-
-        # Evaluar todas las opciones
         all_options = single_store_options + multi_store_options
 
         if not all_options:
-            # Crear un split_inventory vacío para mantener consistencia
             from models.schemas import SplitInventory
 
             empty_split_inventory = SplitInventory(
@@ -350,17 +326,14 @@ class StockRepository(BaseRepository):
             return {
                 'es_factible': False,
                 'razon': f'Stock insuficiente. Disponible: {sum(loc["stock_disponible"] for loc in stock_locations)}, Requerido: {cantidad_requerida}',
-                'split_inventory': empty_split_inventory,  # ✅ Consistente
+                'split_inventory': empty_split_inventory,
                 'split_plan': [],
                 'cantidad_cubierta': 0,
                 'cantidad_faltante': cantidad_requerida,
                 'opciones_evaluadas': 0
             }
 
-        # Elegir la MEJOR opción por eficiencia
         mejor_opcion = max(all_options, key=lambda x: x['eficiencia_score'])
-
-        # Construir split plan
         if mejor_opcion['tipo'] == 'tienda_unica':
             split_plan = [{
                 'tienda_id': mejor_opcion['tienda_id'],
@@ -371,15 +344,13 @@ class StockRepository(BaseRepository):
             }]
         else:
             split_plan = mejor_opcion['split_plan']
-
-        # CREAR SPLIT_INVENTORY OBJECT
         split_inventory_obj = self._build_split_inventory_object(split_plan, cantidad_requerida, nearby_stores)
 
         return {
             'es_factible': True,
             'cantidad_cubierta': cantidad_requerida,
             'cantidad_faltante': 0,
-            'split_inventory': split_inventory_obj,  # ✅ Agregado el objeto requerido
+            'split_inventory': split_inventory_obj,
             'split_plan': split_plan,
             'razon': f'Opción {mejor_opcion["tipo"]}: {len(split_plan)} ubicaciones (eficiencia: {mejor_opcion["eficiencia_score"]:.3f})',
             'opciones_evaluadas': len(all_options),
@@ -393,8 +364,6 @@ class StockRepository(BaseRepository):
         """🔄 Genera combinaciones inteligentes de split"""
 
         combinations = []
-
-        # Combinaciones de 2 tiendas
         for i in range(len(stock_locations)):
             for j in range(i + 1, len(stock_locations)):
                 combo = self._evaluate_two_store_combo(
@@ -404,7 +373,6 @@ class StockRepository(BaseRepository):
                 if combo and combo['cantidad_cubierta'] >= cantidad_requerida:
                     combinations.append(combo)
 
-        # Combinaciones de 3 tiendas (solo si es necesario)
         if max_stores >= 3 and not combinations:
             for i in range(len(stock_locations)):
                 for j in range(i + 1, len(stock_locations)):
@@ -428,7 +396,6 @@ class StockRepository(BaseRepository):
         if stock1 + stock2 < cantidad_requerida:
             return None
 
-        # Optimizar distribución
         cantidad1 = min(stock1, cantidad_requerida)
         cantidad2 = max(0, cantidad_requerida - cantidad1)
 
@@ -479,14 +446,12 @@ class StockRepository(BaseRepository):
         if stock1 + stock2 + stock3 < cantidad_requerida:
             return None
 
-        # Distribución optimizada (greedy por stock disponible)
         stores = [
             (store1, stock1, distance_map.get(store1['tienda_id'], 999)),
             (store2, stock2, distance_map.get(store2['tienda_id'], 999)),
             (store3, stock3, distance_map.get(store3['tienda_id'], 999))
         ]
 
-        # Ordenar por distancia para optimizar
         stores.sort(key=lambda x: x[2])
 
         split_plan = []
@@ -524,7 +489,8 @@ class StockRepository(BaseRepository):
             'eficiencia_score': eficiencia_score
         }
 
-    def _calculate_efficiency_score(self, cantidad: int, distancia_total: float, complejidad: int) -> float:
+    @staticmethod
+    def _calculate_efficiency_score(cantidad: int, distancia_total: float, complejidad: int) -> float:
         """📊 Calcula score de eficiencia para comparar opciones"""
 
         # Penalizar distancia y complejidad
@@ -539,7 +505,8 @@ class StockRepository(BaseRepository):
 
         return max(0.1, min(1.0, score))
 
-    def _build_split_inventory_object(self, split_plan: List[Dict[str, Any]],
+    @staticmethod
+    def _build_split_inventory_object(split_plan: List[Dict[str, Any]],
                                       cantidad_requerida: int,
                                       nearby_stores: List[Dict[str, Any]]):
         """🏗️ Construye objeto SplitInventory requerido por el sistema"""
@@ -632,7 +599,8 @@ class ExternalFactorsRepository(BaseRepository):
         logger.info(f"🤖 Generando factores automáticos para {fecha_str}")
         return self._generate_auto_factors(fecha, codigo_postal)
 
-    def _process_real_factors(self, factors: Dict[str, Any], fecha: datetime, codigo_postal: str) -> Dict[str, Any]:
+    @staticmethod
+    def _process_real_factors(factors: Dict[str, Any], fecha: datetime, codigo_postal: str) -> Dict[str, Any]:
         """🔄 Procesa factores REALES del CSV"""
 
         return {
@@ -648,7 +616,8 @@ class ExternalFactorsRepository(BaseRepository):
             'fuente_datos': 'CSV_real'
         }
 
-    def _generate_auto_factors(self, fecha: datetime, codigo_postal: str) -> Dict[str, Any]:
+    @staticmethod
+    def _generate_auto_factors(fecha: datetime, codigo_postal: str) -> Dict[str, Any]:
         """🤖 Genera factores automáticamente con lógica mejorada"""
         from utils.temporal_detector import TemporalFactorDetector
 
@@ -815,7 +784,7 @@ class PostalCodeRepository(BaseRepository):
         return processed
 
     def is_zona_roja(self, codigo_postal: str) -> bool:
-        """🚨 Detecta zona roja"""
+        """Detecta zona roja"""
         cp_info = self.get_postal_code_info(codigo_postal)
         if not cp_info:
             return False
@@ -825,18 +794,18 @@ class PostalCodeRepository(BaseRepository):
 
 
 class ClimateRepository(BaseRepository):
-    """🌤️ Repositorio de datos climáticos"""
+    """ Repositorio de datos climáticos"""
 
     def load_data(self) -> pl.DataFrame:
         return self._load_with_cache(settings.CSV_FILES['clima'])
 
     def get_climate_by_postal_code(self, codigo_postal: str, fecha: datetime) -> Dict[str, Any]:
-        """🌡️ Obtiene datos climáticos por CP y fecha"""
-        # Implementación original mantenida
+        """Obtiene datos climáticos por CP y fecha"""
         return self._get_default_climate(fecha)
 
-    def _get_default_climate(self, fecha: datetime) -> Dict[str, Any]:
-        """🌡️ Clima por defecto"""
+    @staticmethod
+    def _get_default_climate(fecha: datetime) -> Dict[str, Any]:
+        """ Clima por defecto"""
         return {
             'clima_actual': 'Templado',
             'temperatura': 22,
@@ -846,13 +815,13 @@ class ClimateRepository(BaseRepository):
 
 
 class ExternalFleetRepository(BaseRepository):
-    """🚚 Repositorio de flota externa"""
+    """ Repositorio de flota externa"""
 
     def load_data(self) -> pl.DataFrame:
         return self._load_with_cache(settings.CSV_FILES['flota_externa'])
 
     def get_available_carriers(self, codigo_postal: str, peso_kg: float) -> List[Dict[str, Any]]:
-        """📋 Obtiene carriers disponibles para CP y peso"""
+        """ Obtiene carriers disponibles para CP y peso"""
         df = self.load_data()
 
         try:
@@ -872,22 +841,22 @@ class ExternalFleetRepository(BaseRepository):
         logger.info(f"🚚 Carriers disponibles para {codigo_postal}: {len(carriers_list)}")
         return carriers_list
 
-    def calculate_external_cost(self, carrier_info: Dict[str, Any],
+    @staticmethod
+    def calculate_external_cost(carrier_info: Dict[str, Any],
                                 peso_kg: float, distancia_km: float) -> float:
-        """💰 Calcula costo de flota externa"""
+        """Calcula costo de flota externa"""
         costo_base = carrier_info['costo_base_mxn']
         peso_extra = max(0, peso_kg - carrier_info['peso_min_kg'])
         costo_peso_extra = peso_extra * carrier_info['costo_por_kg_adicional']
-
-        # Factor por distancia (simplificado)
         factor_distancia = 1.0 + (distancia_km / 1000) * 0.1
 
         costo_total = (costo_base + costo_peso_extra) * factor_distancia
 
         return round(costo_total, 2)
 
-    def get_delivery_time_for_carrier(self, carrier_info: Dict[str, Any]) -> tuple:
-        """⏱️ Obtiene tiempo de entrega del carrier"""
+    @staticmethod
+    def get_delivery_time_for_carrier(carrier_info: Dict[str, Any]) -> tuple:
+        """Obtiene tiempo de entrega del carrier"""
         tiempo_str = carrier_info.get('tiempo_entrega_dias_habiles', '3-5')
 
         try:
@@ -895,8 +864,6 @@ class ExternalFleetRepository(BaseRepository):
                 min_days, max_days = map(int, tiempo_str.split('-'))
             else:
                 min_days = max_days = int(tiempo_str)
-
-            # Convertir días a horas (asumiendo días hábiles)
             min_hours = min_days * 24
             max_hours = max_days * 24
 

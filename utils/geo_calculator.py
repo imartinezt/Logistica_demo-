@@ -1,24 +1,20 @@
 import math
 from typing import Tuple, List, Dict, Any
+
 from geopy.distance import geodesic, great_circle
-from geopy import Point
-import pyproj
 from pyproj import Transformer
-import numpy as np
 
 from config.settings import settings
 from utils.logger import logger
 
 
 class GeoCalculator:
-    """🌍 Calculador geoespacial avanzado usando pyproj y geopy"""
+    """Calculador geoespacial """
 
-    # Transformer para México (EPSG:4326 -> EPSG:6372 - México ITRF2008)
     _transformer_mexico = None
 
     @staticmethod
     def _get_transformer():
-        """🔧 Obtiene transformer con manejo de errores"""
         if GeoCalculator._transformer_mexico is None:
             try:
                 GeoCalculator._transformer_mexico = Transformer.from_crs("EPSG:4326", "EPSG:6372", always_xy=True)
@@ -31,9 +27,8 @@ class GeoCalculator:
     def calculate_route_efficiency(distance_km: float,
                                    tiempo_estimado_horas: float,
                                    costo_mxn: float) -> Dict[str, Any]:
-        """📊 Calcula métricas de eficiencia de ruta"""
+        """Calcula métricas de eficiencia de ruta"""
 
-        # Validar inputs
         if tiempo_estimado_horas <= 0 or distance_km <= 0 or costo_mxn <= 0:
             return {
                 "velocidad_promedio_kmh": 0,
@@ -47,8 +42,6 @@ class GeoCalculator:
         velocidad_promedio = distance_km / tiempo_estimado_horas
         costo_por_km = costo_mxn / distance_km
         costo_por_hora = costo_mxn / tiempo_estimado_horas
-
-        # Score de eficiencia (0-1) más permisivo
         efficiency_score = min(1.0, (velocidad_promedio / 40) * (1 / max(1, costo_por_km / 12)))
 
         return {
@@ -68,9 +61,8 @@ class GeoCalculator:
     def calculate_distance_km(lat1: float, lon1: float,
                               lat2: float, lon2: float,
                               method: str = 'geodesic') -> float:
-        """🌐 Calcula distancia real entre coordenadas usando métodos avanzados"""
+        """Calcula distancia real entre coordenadas """
 
-        # Validar coordenadas
         if not GeoCalculator._validate_coordinates(lat1, lon1, lat2, lon2):
             logger.warning(f"⚠️ Coordenadas inválidas: ({lat1},{lon1}) -> ({lat2},{lon2})")
             return 0.0
@@ -496,14 +488,12 @@ class GeoCalculator:
                                    polygon_points: List[Tuple[float, float]]) -> bool:
         """🔍 Verifica si un punto está dentro de un polígono de entrega"""
         if len(polygon_points) < 3:
-            return True  # Sin polígono definido, asumir cobertura
+            return True
 
-        # Validar coordenadas del punto
         if not GeoCalculator._validate_coordinates(lat, lon, lat, lon):
             return False
 
         try:
-            # Algoritmo ray casting para punto en polígono
             x, y = lon, lat
             n = len(polygon_points)
             inside = False
@@ -521,4 +511,4 @@ class GeoCalculator:
 
         except Exception as e:
             logger.warning(f"❌ Error en verificación de polígono: {e}")
-            return True  # En caso de error, asumir que está dentro
+            return True

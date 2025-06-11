@@ -16,14 +16,12 @@ class TemporalFactorDetector:
                                      data_dir: Path = None) -> Dict[str, Any]:
         """🎯 Detección REAL usando CSV de factores externos"""
 
-        # Buscar en CSV real de factores externos
         real_factors = TemporalFactorDetector._load_real_external_factors(fecha, codigo_postal, data_dir)
 
         if real_factors:
             logger.info(f"📅 Factores REALES encontrados en CSV para {fecha.date()}")
             return real_factors
 
-        # Si no hay datos reales, generar basado en patrones conocidos
         logger.info(f"🤖 Generando factores automáticos para {fecha.date()}")
         return TemporalFactorDetector._generate_intelligent_factors(fecha, codigo_postal)
 
@@ -39,12 +37,9 @@ class TemporalFactorDetector:
         try:
             df = pl.read_csv(csv_path)
             fecha_str = fecha.date().isoformat()
-
-            # Buscar por fecha exacta
             exact_match = df.filter(pl.col('fecha') == fecha_str)
 
             if exact_match.height > 0:
-                # Si hay múltiples registros, filtrar por CP si está disponible
                 if codigo_postal and 'rango_cp_afectado' in df.columns:
                     cp_prefix = codigo_postal[:2]
                     cp_matches = exact_match.filter(
@@ -59,7 +54,6 @@ class TemporalFactorDetector:
 
                 return TemporalFactorDetector._process_csv_factors(factor_data, fecha, codigo_postal)
 
-            # Buscar fechas cercanas (±3 días)
             for delta in range(1, 4):
                 for direction in [-1, 1]:
                     check_date = fecha + timedelta(days=delta * direction)

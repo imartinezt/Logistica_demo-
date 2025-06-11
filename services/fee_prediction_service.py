@@ -5,8 +5,7 @@ from typing import Dict, List, Any
 from config.settings import settings
 from models.schemas import (
     PredictionRequest, PredictionResponse, TipoEntregaEnum,
-    ExplicabilidadCompleta, FactoresExternos, UbicacionStock,
-    SplitInventory, RutaCompleta, Segmento, CandidatoRuta,
+    ExplicabilidadCompleta, FactoresExternos, RutaCompleta, Segmento, CandidatoRuta,
     DecisionGemini, FEECalculation
 )
 from services.ai.gemini_service import GeminiLogisticsDecisionEngine
@@ -16,16 +15,14 @@ from services.data.repositories import (
     ExternalFactorsRepository, ExternalFleetRepository
 )
 from services.ml.lightgbm_optimizer import RouteOptimizer
-from utils.geo_calculator import GeoCalculator
 from utils.logger import logger
 from utils.temporal_detector import TemporalFactorDetector
 
 
 class FEEPredictionService:
-    """🎯 Servicio CORREGIDO de predicción FEE con lógica realista"""
+    """predicción FEE """
 
     def __init__(self, data_dir):
-        # Inicializar repositorios
         self.repositories = {
             'product': ProductRepository(data_dir),
             'store': StoreRepository(data_dir),
@@ -50,7 +47,6 @@ class FEEPredictionService:
         try:
             logger.info(f"🎯 Iniciando predicción FEE para {request.sku_id} -> {request.codigo_postal}")
 
-            # 1️⃣ Validación básica
             validation_result = await self._validate_request(request)
             if not validation_result['is_valid']:
                 raise ValueError(f"Validación fallida: {'; '.join(validation_result['errors'])}")
@@ -58,14 +54,12 @@ class FEEPredictionService:
             product_info = validation_result['product_info']
             postal_info = validation_result['postal_info']
 
-            # 2️⃣ Detectar factores externos REALES del CSV
             logger.info("🌤️ Detectando factores externos REALES...")
             external_factors = TemporalFactorDetector.detect_comprehensive_factors(
                 request.fecha_compra, request.codigo_postal, self.data_dir
             )
 
-            # 3️⃣ Análisis OPTIMIZADO de inventario (por proximidad primero)
-            logger.info("📦 Analizando inventario OPTIMIZADO...")
+            logger.info("📦 Analizando inventario ...")
             try:
                 inventory_analysis = await self._analyze_inventory_optimized(
                     request, product_info, postal_info
@@ -79,8 +73,7 @@ class FEEPredictionService:
             if not inventory_analysis.get('inventory_available', False):
                 raise ValueError(f"Inventario no disponible: {inventory_analysis.get('reason', 'Sin stock')}")
 
-            # 4️⃣ Generación de candidatos REALISTAS
-            logger.info("🗺️ Generando candidatos REALISTAS...")
+            logger.info("🗺️ Generando candidatos...")
             try:
                 route_candidates = await self._generate_realistic_candidates(
                     inventory_analysis, postal_info, external_factors, request
@@ -94,13 +87,11 @@ class FEEPredictionService:
             if not route_candidates:
                 raise ValueError("No se encontraron rutas factibles")
 
-            # 5️⃣ Ranking por TIEMPO+COSTO (no por límites absolutos)
             logger.info("🎯 Ranking por eficiencia TIEMPO+COSTO...")
             ranked_candidates = self.route_optimizer.rank_candidates_with_lightgbm(
                 route_candidates
             )
 
-            # 6️⃣ Decisión final con Gemini
             logger.info("🧠 Decisión final con Gemini...")
             top_candidates = self.route_optimizer.get_top_candidates(ranked_candidates, max_candidates=5)
 
@@ -110,7 +101,6 @@ class FEEPredictionService:
                 external_factors
             )
 
-            # 7️⃣ Cálculo CORREGIDO de FEE
             logger.info("📅 Calculando FEE CORREGIDO...")
             final_response = await self._build_corrected_response(
                 request, gemini_decision, external_factors,
@@ -132,23 +122,17 @@ class FEEPredictionService:
 
         errors = []
         warnings = []
-
-        # Validar producto
         product_info = self.repositories['product'].get_product_by_sku(request.sku_id)
         if not product_info:
             errors.append(f"Producto no encontrado: {request.sku_id}")
 
-        # Validar código postal
         postal_info = self.repositories['postal_code'].get_postal_code_info(request.codigo_postal)
         if not postal_info:
             errors.append(f"Código postal no válido: {request.codigo_postal}")
 
-        # Validar fecha (permitir fechas del pasado para simulaciones)
-        # Solo validar que sea una fecha válida
         if request.fecha_compra.year < 2020 or request.fecha_compra.year > 2030:
             warnings.append(f"Fecha de compra fuera del rango esperado: {request.fecha_compra.year}")
 
-        # Información para simulaciones
         if request.fecha_compra.date() < datetime.now().date():
             logger.info(f"📊 Ejecutando SIMULACIÓN para fecha histórica: {request.fecha_compra.date()}")
 

@@ -1,9 +1,6 @@
-from datetime import datetime
 from typing import List, Dict, Any, Tuple
 
 import joblib
-import lightgbm as lgb
-import numpy as np
 
 from config.settings import settings
 from utils.geo_calculator import GeoCalculator
@@ -11,7 +8,7 @@ from utils.logger import logger
 
 
 class RouteOptimizer:
-    """🎯 Optimizador CORREGIDO: sin filtros de costo arbitrarios, enfocado en eficiencia"""
+    """ Optimizador"""
 
     def __init__(self):
         self.model = None
@@ -20,8 +17,6 @@ class RouteOptimizer:
         self.model_path = settings.MODELS_DIR / "route_optimizer_lgb.pkl"
 
         settings.MODELS_DIR.mkdir(exist_ok=True)
-
-        # Pesos ajustados para priorizar TIEMPO y CONFIABILIDAD
         self.weights = {
             'tiempo': 0.4,  # Más peso al tiempo
             'costo': 0.2,  # Menos peso al costo
@@ -34,7 +29,6 @@ class RouteOptimizer:
                                   target_coordinates: Tuple[float, float],
                                   factores_externos: Dict[str, Any],
                                   repositories: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """🔄 Genera candidatos INTELIGENTES sin restricciones arbitrarias"""
 
         candidates = []
         target_lat, target_lon = target_coordinates
@@ -43,10 +37,8 @@ class RouteOptimizer:
             logger.warning("❌ Split de inventario no factible")
             return []
 
-        # Obtener split_plan de manera segura
         split_plan = split_inventory.get('split_plan', [])
         if not split_plan:
-            # Si no hay split_plan, intentar extraer de split_inventory object
             split_obj = split_inventory.get('split_inventory')
             if split_obj and hasattr(split_obj, 'ubicaciones'):
                 split_plan = []
@@ -54,7 +46,7 @@ class RouteOptimizer:
                     split_plan.append({
                         'tienda_id': ubicacion.ubicacion_id,
                         'cantidad': ubicacion.stock_disponible,
-                        'distancia_km': 0  # Se calculará después
+                        'distancia_km': 0  # TODO esto lo voy a calcular despues [  RECORDATORIO ]
                     })
                 logger.info(f"📊 Extraído split_plan desde objeto SplitInventory: {len(split_plan)} ubicaciones")
 
@@ -64,25 +56,20 @@ class RouteOptimizer:
 
         logger.info(f"📊 Split plan obtenido: {len(split_plan)} ubicaciones")
 
-        # 1️⃣ ESTRATEGIA ÓPTIMA: Ruta directa desde ubicación con MÁS stock
         if len(split_plan) == 1:
-            # Caso ideal: una sola ubicación tiene todo el stock
             primary_candidate = self._create_optimized_direct_route(
                 split_plan[0], target_coordinates, factores_externos, repositories
             )
             if primary_candidate:
                 candidates.append(primary_candidate)
 
-        # 2️⃣ ESTRATEGIA CONSOLIDADA: Si hay múltiples ubicaciones, evaluar consolidación
         elif len(split_plan) > 1:
-            # Opción A: Consolidar en la ubicación más cercana al cliente
             consolidated_candidate = self._create_intelligent_consolidated_route(
                 split_plan, target_coordinates, factores_externos, repositories
             )
             if consolidated_candidate:
                 candidates.append(consolidated_candidate)
 
-            # Opción B: Evaluar si alguna ubicación puede cubrir toda la demanda
             for location in split_plan:
                 full_stock_candidate = self._check_full_stock_alternative(
                     location, split_inventory, target_coordinates, factores_externos, repositories
@@ -90,7 +77,6 @@ class RouteOptimizer:
                 if full_stock_candidate:
                     candidates.append(full_stock_candidate)
 
-        # 3️⃣ ESTRATEGIA HÍBRIDA: Solo para distancias largas (>100km)
         distance_to_closest = min([
             GeoCalculator.calculate_distance_km(
                 target_lat, target_lon,
@@ -106,7 +92,6 @@ class RouteOptimizer:
             )
             candidates.extend(hybrid_candidates)
 
-        # 4️⃣ ESTRATEGIA CEDIS: Solo para casos específicos
         cedis_candidates = self._create_selective_cedis_routes(
             split_plan, target_coordinates, factores_externos, repositories, distance_to_closest
         )
@@ -128,35 +113,35 @@ class RouteOptimizer:
         if not store_info:
             return None
 
-        # Calcular distancia real
         distance_km = GeoCalculator.calculate_distance_km(
             store_info['latitud'], store_info['longitud'],
             target_coordinates[0], target_coordinates[1]
         )
 
-        # Determinar tipo de flota INTELIGENTE
+        distance_km = max(distance_km, 5.0)
+
         tipo_flota = self._determine_optimal_fleet_type(
             distance_km, factores_externos, repositories, target_coordinates
         )
 
-        # Calcular tiempo REALISTA
-        travel_time = GeoCalculator.calculate_travel_time(
+        base_travel_time = GeoCalculator.calculate_travel_time(
             distance_km,
             tipo_flota,
             factores_externos.get('trafico_nivel', 'Moderado'),
             factores_externos.get('condicion_clima', 'Templado')
         )
 
-        # Tiempo total incluyendo preparación
+        impacto_tiempo_extra = factores_externos.get('impacto_tiempo_extra_horas', 0)
         tiempo_preparacion = settings.TIEMPO_PICKING_PACKING
-        tiempo_total = travel_time + tiempo_preparacion
+        tiempo_total = tiempo_preparacion + base_travel_time + impacto_tiempo_extra
 
-        # Costo REALISTA (sin límites arbitrarios)
+        logger.info(
+            f"⏱️ Tiempo calculado: prep={tiempo_preparacion}h + viaje={base_travel_time}h + extra={impacto_tiempo_extra}h = {tiempo_total}h")
+
         costo_base = self._calculate_realistic_cost(
             distance_km, tipo_flota, location_split['cantidad'], factores_externos
         )
 
-        # Probabilidad REALISTA
         probabilidad = self._calculate_realistic_probability(
             distance_km, tiempo_total, factores_externos, tipo_flota
         )
@@ -170,12 +155,12 @@ class RouteOptimizer:
                     'origen': tienda_id,
                     'destino': 'cliente',
                     'distancia_km': distance_km,
-                    'tiempo_horas': travel_time,
+                    'tiempo_horas': base_travel_time,  # Solo tiempo de viaje
                     'tipo_flota': tipo_flota,
                     'costo_segmento': costo_base
                 }
             ],
-            'tiempo_total_horas': tiempo_total,
+            'tiempo_total_horas': tiempo_total,  # Tiempo total con factores
             'costo_total_mxn': costo_base,
             'distancia_total_km': distance_km,
             'probabilidad_cumplimiento': probabilidad,
@@ -184,9 +169,12 @@ class RouteOptimizer:
                 f"factor_demanda_{factores_externos.get('factor_demanda', 1.0)}",
                 f"trafico_{factores_externos.get('trafico_nivel', 'Moderado')}",
                 f"flota_{tipo_flota}",
+                f"impacto_tiempo_+{impacto_tiempo_extra}h",
                 'optimizacion_inteligente'
             ],
-            'tiempo_preparacion_total': tiempo_preparacion
+            'tiempo_preparacion_total': tiempo_preparacion,
+            'tiempo_viaje_base': base_travel_time,
+            'impacto_factores_externos': impacto_tiempo_extra
         }
 
     def _create_intelligent_consolidated_route(self,
@@ -373,13 +361,16 @@ class RouteOptimizer:
 
     def _calculate_realistic_cost(self, distance_km: float, fleet_type: str,
                                   cantidad: int, factores_externos: Dict[str, Any]) -> float:
-        """💰 Calcula costo REALISTA sin límites arbitrarios"""
+        """💰 Calcula costo REALISTA con factores externos aplicados"""
+
+        # Asegurar distancia mínima para cálculo realista
+        distance_km = max(distance_km, 5.0)
 
         # Costos base más realistas
         cost_per_km = {
-            'FI': 10.0,  # Liverpool flota interna
-            'FE': 15.0,  # Flota externa
-            'FI_FE': 12.5  # Híbrido
+            'FI': 12.0,  # Liverpool flota interna (aumentado)
+            'FE': 18.0,  # Flota externa (aumentado)
+            'FI_FE': 15.0  # Híbrido
         }
 
         base_cost = distance_km * cost_per_km.get(fleet_type, 12.0)
@@ -392,21 +383,31 @@ class RouteOptimizer:
         else:
             quantity_factor = 1.0
 
-        # Factor por demanda (del CSV o calculado)
+        # Factor por demanda REAL (del CSV o calculado)
         demand_factor = factores_externos.get('factor_demanda', 1.0)
 
-        # Aplicar factor de demanda de manera inteligente (no lineal)
+        # Aplicar factor de demanda de manera realista
         if demand_factor > 3.0:
-            cost_multiplier = 1.4  # 40% incremento máximo
+            cost_multiplier = 1.8  # 80% incremento para Navidad
+        elif demand_factor > 2.5:
+            cost_multiplier = 1.5  # 50% incremento temporada crítica
         elif demand_factor > 2.0:
-            cost_multiplier = 1.0 + (demand_factor - 2.0) * 0.3  # Escalado gradual
+            cost_multiplier = 1.0 + (demand_factor - 2.0) * 0.4  # Escalado gradual
         else:
             cost_multiplier = 1.0
 
+        # Aplicar impacto de costo extra (del CSV)
+        costo_extra_pct = factores_externos.get('impacto_costo_extra_pct', 0)
+        if costo_extra_pct > 0:
+            cost_multiplier = max(cost_multiplier, 1.0 + costo_extra_pct / 100)
+
         # Costo mínimo realista
-        minimum_cost = 35.0
+        minimum_cost = 50.0  # Aumentado para ser más realista
 
         final_cost = max(base_cost * quantity_factor * cost_multiplier, minimum_cost)
+
+        logger.info(
+            f"💰 Costo calculado: base=${base_cost:.1f} × qty_factor={quantity_factor} × demand_factor={cost_multiplier:.2f} = ${final_cost:.1f}")
 
         return round(final_cost, 2)
 
