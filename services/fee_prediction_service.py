@@ -932,7 +932,7 @@ class FEEPredictionService:
         return peso_unitario * cantidad
 
     def _rank_candidates_dynamic(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """🏆 Rankea candidatos dinámicamente"""
+        """🏆 Rankea candidatos dinámicamente - CORREGIDO"""
 
         if not candidates:
             return []
@@ -947,7 +947,7 @@ class FEEPredictionService:
         min_distancia, max_distancia = min(distancias), max(distancias)
 
         for candidate in candidates:
-            # Scores normalizados
+            # Scores normalizados (0-1)
             score_tiempo = 1 - (candidate['tiempo_total_horas'] - min_tiempo) / max(1, max_tiempo - min_tiempo)
             score_costo = 1 - (candidate['costo_total_mxn'] - min_costo) / max(1, max_costo - min_costo)
             score_distancia = 1 - (candidate['distancia_total_km'] - min_distancia) / max(1,
@@ -969,9 +969,16 @@ class FEEPredictionService:
                     weights['distancia'] * score_distancia
             )
 
-            # Bonus por tipo de ruta
+            # 🔴 PROBLEMA: Bonus puede exceder 1.0
+            # if candidate['tipo_ruta'] == 'directa':
+            #     score_combinado *= 1.1  # ❌ Puede dar 1.0184
+
+            # ✅ SOLUCIÓN 1: Bonus aditivo controlado
             if candidate['tipo_ruta'] == 'directa':
-                score_combinado *= 1.1
+                score_combinado += 0.05  # Bonus aditivo pequeño
+
+            # ✅ SOLUCIÓN 2: Normalizar SIEMPRE a máximo 1.0
+            score_combinado = min(1.0, score_combinado)
 
             candidate['score_lightgbm'] = round(score_combinado, 4)
             candidate['score_breakdown'] = {
@@ -1106,86 +1113,180 @@ class FEEPredictionService:
 
     def _determine_delivery_type(self, tiempo_horas: float, fecha_compra: datetime,
                                  external_factors: Dict[str, Any], cp_info: Dict[str, Any]) -> TipoEntregaEnum:
-        """📦 Determina tipo de entrega dinámicamente"""
+        """📦 Determina tipo de entrega CORREGIDO"""
 
         hora_compra = fecha_compra.hour
         cobertura = cp_info.get('cobertura_liverpool', False)
         criticidad = external_factors.get('criticidad_logistica', 'Normal')
+        zona = cp_info.get('zona_seguridad', 'Verde')
 
-        if tiempo_horas <= 8 and hora_compra <= 14 and cobertura and criticidad != 'Crítica':
-            return TipoEntregaEnum.FLASH
-        elif tiempo_horas <= 24 and hora_compra <= 20:
-            return TipoEntregaEnum.EXPRESS
-        elif tiempo_horas <= 72:
-            return TipoEntregaEnum.STANDARD
+        logger.info(f"📦 Determinando tipo entrega:")
+        logger.info(f"   Tiempo: {tiempo_horas:.1f}h")
+        logger.info(f"   Hora compra: {hora_compra}h")
+        logger.info(f"   Cobertura: {cobertura}")
+        logger.info(f"   Zona: {zona}")
+        logger.info(f"   Criticidad: {criticidad}")
+
+        # ✅ CORRECCIÓN: Lógica más realista
+
+        # FLASH: Solo si es muy rápido, temprano, y zona verde
+        if (tiempo_horas <= 4 and hora_compra <= 12 and
+                cobertura and zona == 'Verde' and criticidad != 'Crítica'):
+            tipo = TipoEntregaEnum.FLASH
+
+        # EXPRESS: Entrega mismo día si hay tiempo
+        elif (tiempo_horas <= 8 and hora_compra <= 16 and
+              cobertura and zona in ['Verde', 'Amarilla']):
+            tipo = TipoEntregaEnum.EXPRESS
+
+        # STANDARD: Entrega en 24-48h
+        elif tiempo_horas <= 48:
+            tipo = TipoEntregaEnum.STANDARD
+
+        # PROGRAMADA: Más de 48h
         else:
-            return TipoEntregaEnum.PROGRAMADA
+            tipo = TipoEntregaEnum.PROGRAMADA
+
+        logger.info(f"   -> Tipo seleccionado: {tipo.value}")
+        return tipo
 
     def _calculate_delivery_date(self, fecha_compra: datetime, tiempo_horas: float,
                                  tipo_entrega: TipoEntregaEnum, external_factors: Dict[str, Any]) -> datetime:
-        """📅 Cálculo CORREGIDO de fecha de entrega con horarios operativos"""
+        """📅 Cálculo CORREGIDO de fecha de entrega"""
 
-        # CORRECCIÓN: Calcular ETA considerando horarios operativos
-        current_time = fecha_compra
-        remaining_hours = tiempo_horas
+        logger.info(f"📅 INICIO cálculo entrega:")
+        logger.info(f"   Compra: {fecha_compra.strftime('%Y-%m-%d %H:%M')} ({fecha_compra.strftime('%A')})")
+        logger.info(f"   Tiempo requerido: {tiempo_horas:.1f}h")
+        logger.info(f"   Tipo entrega: {tipo_entrega.value}")
 
-        # Aplicar tiempo extra por factores
+        # Aplicar tiempo extra por factores externos
         tiempo_extra = external_factors.get('impacto_tiempo_extra_horas', 0)
-        remaining_hours += tiempo_extra
+        tiempo_total_real = tiempo_horas + tiempo_extra
 
-        logger.info(f"📅 Calculando entrega: {remaining_hours:.1f}h desde {current_time.strftime('%Y-%m-%d %H:%M')}")
+        logger.info(f"   + Tiempo extra factores: {tiempo_extra:.1f}h")
+        logger.info(f"   = Tiempo total: {tiempo_total_real:.1f}h")
 
-        # Simular avance hora por hora considerando horarios operativos
+        # HORARIOS OPERATIVOS
+        HORA_INICIO_TIENDA = 9  # 9 AM
+        HORA_CIERRE_TIENDA = 21  # 9 PM
+        HORA_INICIO_ENTREGA = 10  # 10 AM
+        HORA_LIMITE_ENTREGA = 18  # 6 PM
+
+        current_time = fecha_compra
+        remaining_hours = tiempo_total_real
+
+        # ✅ CORRECCIÓN 1: Verificar si aún hay tiempo hoy
+        hora_compra = fecha_compra.hour
+
+        # Si compra después de las 6 PM o no hay tiempo suficiente, ir al siguiente día
+        if hora_compra >= 18 or (hora_compra + tiempo_total_real) >= HORA_CIERRE_TIENDA:
+            logger.info(f"🌙 Compra tardía ({hora_compra}h) o tiempo insuficiente -> Siguiente día hábil")
+            current_time = self._get_next_business_day(fecha_compra)
+            current_time = current_time.replace(hour=HORA_INICIO_TIENDA, minute=0, second=0)
+            logger.info(f"   Nuevo inicio: {current_time.strftime('%Y-%m-%d %H:%M')}")
+
+        # ✅ CORRECCIÓN 2: Simular avance considerando horarios operativos
         while remaining_hours > 0:
-            # Verificar si estamos en horario operativo (9 AM - 9 PM)
-            if 9 <= current_time.hour < 21 and current_time.weekday() < 6:  # Lunes-Sábado
-                # Horas operativas: avanzar normalmente
-                hours_to_add = min(remaining_hours, 21 - current_time.hour)
-                current_time += timedelta(hours=hours_to_add)
-                remaining_hours -= hours_to_add
-            else:
-                # Fuera de horario: saltar al siguiente día operativo a las 9 AM
-                if current_time.weekday() >= 5:  # Fin de semana
-                    days_to_add = 7 - current_time.weekday()  # Ir al lunes
+            # Verificar si estamos en horario operativo
+            if self._is_business_hours(current_time):
+                # Calcular cuántas horas podemos avanzar en este día
+                hours_until_close = min(HORA_CIERRE_TIENDA - current_time.hour, remaining_hours)
+
+                if hours_until_close > 0:
+                    current_time += timedelta(hours=hours_until_close)
+                    remaining_hours -= hours_until_close
+                    logger.info(
+                        f"   Avance: {hours_until_close:.1f}h -> {current_time.strftime('%H:%M')} (quedan {remaining_hours:.1f}h)")
                 else:
-                    days_to_add = 1  # Ir al siguiente día
+                    # Ir al siguiente día hábil
+                    current_time = self._get_next_business_day(current_time)
+                    current_time = current_time.replace(hour=HORA_INICIO_TIENDA, minute=0, second=0)
+                    logger.info(f"   Siguiente día: {current_time.strftime('%Y-%m-%d %H:%M')}")
+            else:
+                # Fuera de horario: ir al siguiente día hábil
+                current_time = self._get_next_business_day(current_time)
+                current_time = current_time.replace(hour=HORA_INICIO_TIENDA, minute=0, second=0)
+                logger.info(f"   Fuera de horario -> {current_time.strftime('%Y-%m-%d %H:%M')}")
 
-                current_time = (current_time + timedelta(days=days_to_add)).replace(hour=9, minute=0, second=0)
+        # ✅ CORRECCIÓN 3: Asegurar que la entrega esté en horario válido
+        if current_time.hour < HORA_INICIO_ENTREGA:
+            current_time = current_time.replace(hour=HORA_INICIO_ENTREGA, minute=0)
+            logger.info(f"   Ajuste horario mínimo: {current_time.strftime('%H:%M')}")
+        elif current_time.hour > HORA_LIMITE_ENTREGA:
+            # Mover al siguiente día
+            current_time = self._get_next_business_day(current_time)
+            current_time = current_time.replace(hour=HORA_INICIO_ENTREGA, minute=0)
+            logger.info(f"   Muy tarde -> Siguiente día: {current_time.strftime('%Y-%m-%d %H:%M')}")
 
-        # Asegurar que la entrega esté en horario de entrega (10 AM - 6 PM)
-        if current_time.hour < 10:
-            current_time = current_time.replace(hour=10, minute=0)
-        elif current_time.hour > 18:
-            current_time = current_time.replace(hour=16, minute=0)  # Tarde pero dentro del rango
+        # ✅ CORRECCIÓN 4: Redondear a intervalos de 30 minutos
+        minutes = current_time.minute
+        if minutes < 30:
+            current_time = current_time.replace(minute=0)
+        else:
+            current_time = current_time.replace(minute=30)
 
-        # CORRECCIÓN: Evitar entregas en domingo para tipos no-FLASH
-        if tipo_entrega != TipoEntregaEnum.FLASH and current_time.weekday() == 6:
-            current_time += timedelta(days=1)
-            current_time = current_time.replace(hour=10, minute=0)
-
-        logger.info(f"📦 Entrega programada: {current_time.strftime('%Y-%m-%d %H:%M')} ({current_time.strftime('%A')})")
+        logger.info(f"📦 FECHA FINAL: {current_time.strftime('%Y-%m-%d %H:%M')} ({current_time.strftime('%A')})")
 
         return current_time
 
+    def _get_next_business_day(self, fecha: datetime) -> datetime:
+        """📅 Obtiene el siguiente día hábil"""
+        next_day = fecha + timedelta(days=1)
+
+        # Si es domingo (6), ir al lunes
+        while next_day.weekday() == 6:  # Domingo
+            next_day += timedelta(days=1)
+
+        return next_day
+
+    def _is_business_hours(self, fecha: datetime) -> bool:
+        """🕐 Verifica si está en horario de negocio"""
+        # Lunes-Sábado, 9 AM - 9 PM
+        return fecha.weekday() < 6 and 9 <= fecha.hour < 21
+
     def _calculate_time_window(self, fecha_entrega: datetime, tipo_entrega: TipoEntregaEnum) -> Dict[str, dt_time]:
-        """🕐 Calcula ventana de entrega"""
+        """🕐 Calcula ventana de entrega CORREGIDA"""
 
+        logger.info(f"🕐 Calculando ventana para: {fecha_entrega.strftime('%Y-%m-%d %H:%M')}")
+
+        # ✅ CORRECCIÓN: Ventanas más realistas
         if tipo_entrega == TipoEntregaEnum.FLASH:
-            ventana = 2
+            ventana_horas = 1  # ±30min para FLASH
+        elif tipo_entrega == TipoEntregaEnum.EXPRESS:
+            ventana_horas = 2  # ±1h para EXPRESS
         else:
-            ventana = 4
+            ventana_horas = 4  # ±2h para STANDARD/PROGRAMADA
 
-        inicio = max(
-            fecha_entrega - timedelta(hours=ventana // 2),
-            fecha_entrega.replace(hour=9, minute=0)
-        )
+        # Calcular inicio y fin de ventana
+        inicio_ventana = fecha_entrega - timedelta(hours=ventana_horas // 2)
+        fin_ventana = fecha_entrega + timedelta(hours=ventana_horas // 2)
 
-        fin = min(
-            fecha_entrega + timedelta(hours=ventana // 2),
-            fecha_entrega.replace(hour=18, minute=0)
-        )
+        # ✅ CORRECCIÓN: Respetar horarios de entrega (10 AM - 6 PM)
+        HORA_MIN_ENTREGA = 10
+        HORA_MAX_ENTREGA = 18
 
-        return {'inicio': inicio.time(), 'fin': fin.time()}
+        # Ajustar inicio
+        if inicio_ventana.hour < HORA_MIN_ENTREGA:
+            inicio_ventana = inicio_ventana.replace(hour=HORA_MIN_ENTREGA, minute=0)
+        elif inicio_ventana.hour >= HORA_MAX_ENTREGA:
+            inicio_ventana = inicio_ventana.replace(hour=HORA_MAX_ENTREGA - 1, minute=0)
+
+        # Ajustar fin
+        if fin_ventana.hour < HORA_MIN_ENTREGA:
+            fin_ventana = fin_ventana.replace(hour=HORA_MIN_ENTREGA + 1, minute=0)
+        elif fin_ventana.hour >= HORA_MAX_ENTREGA:
+            fin_ventana = fin_ventana.replace(hour=HORA_MAX_ENTREGA, minute=0)
+
+        # Asegurar que la ventana tenga sentido
+        if fin_ventana <= inicio_ventana:
+            fin_ventana = inicio_ventana + timedelta(hours=1)
+
+        logger.info(f"   Ventana: {inicio_ventana.strftime('%H:%M')} - {fin_ventana.strftime('%H:%M')}")
+
+        return {
+            'inicio': inicio_ventana.time(),
+            'fin': fin_ventana.time()
+        }
 
     def _build_route_structure(self, route_data: Dict[str, Any], stock_analysis: Dict[str, Any]) -> RutaCompleta:
         """🏗️ Construye estructura con NOMBRES de tiendas"""
