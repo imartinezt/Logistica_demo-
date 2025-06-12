@@ -295,66 +295,66 @@ class GeoCalculator:
                               transport_type: str = 'FI',
                               traffic_level: str = 'Moderado',
                               weather_condition: str = 'Despejado',
-                              road_type: str = 'urbano') -> float:
-        """⏱️ Calcula tiempo de viaje con factores avanzados"""
+                              road_type: str = 'carretera') -> float:
+        """⏱️ Tiempo de viaje CORREGIDO con velocidades realistas"""
 
-        # Validar inputs
         if distance_km <= 0:
-            return 0.25  # Tiempo mínimo base
+            return 0.5  # Tiempo mínimo base
 
-        # Velocidad base según tipo de flota
+        # CORRECCIÓN: Velocidades base realistas
         if transport_type == 'FI':
-            base_speed = settings.SPEED_FLOTA_INTERNA_KMH
+            base_speed = 55.0  # 55 km/h promedio para flota interna
         elif transport_type == 'FE':
-            base_speed = settings.SPEED_FLOTA_EXTERNA_KMH
+            base_speed = 65.0  # 65 km/h promedio para flota externa
         else:
-            base_speed = 30.0  # Velocidad por defecto
+            base_speed = 60.0
 
-        # Ajustes por tipo de camino
-        road_multipliers = {
-            'urbano': 0.75,  # Era 0.7, un poco más optimista
-            'suburbano': 0.9,  # Igual
-            'carretera': 1.2,  # Igual
-            'autopista': 1.5  # Igual
-        }
-
-        # Ajustes por tráfico (más permisivos)
+        # CORRECCIÓN: Multiplicadores más realistas
         traffic_multipliers = {
             'Bajo': 1.0,
-            'Moderado': 0.85,  # Era 0.8, más optimista
-            'Alto': 0.7,  # Era 0.6, más optimista
-            'Muy_Alto': 0.5  # Era 0.4, más optimista
+            'Moderado': 0.90,  # Reducción menor
+            'Alto': 0.75,  # Más realista
+            'Muy_Alto': 0.60  # Más realista
         }
 
-        # Ajustes por clima (más permisivos)
         weather_multipliers = {
             'Despejado': 1.0,
-            'Nublado': 0.97,  # Era 0.95, más optimista
-            'Lluvioso': 0.8,  # Era 0.7, más optimista
-            'Tormenta': 0.6,  # Era 0.5, más optimista
-            'Frio': 0.95,  # Era 0.9, más optimista
-            'Templado': 1.0,
-            'Calido': 0.98  # Nuevo
+            'Nublado': 0.98,
+            'Lluvioso': 0.85,  # Más realista
+            'Tormenta': 0.70,  # Más realista
+            'Templado': 1.0
+        }
+
+        # Para distancias largas, asumir carretera
+        if distance_km > 100:
+            road_type = 'carretera'
+
+        road_multipliers = {
+            'urbano': 0.60,  # Ciudad es más lenta
+            'suburbano': 0.80,  # Suburbios intermedios
+            'carretera': 1.10,  # Carretera es más rápida
+            'autopista': 1.25  # Autopista más rápida
         }
 
         # Calcular velocidad ajustada
-        road_factor = road_multipliers.get(road_type, 1.0)
-        traffic_factor = traffic_multipliers.get(traffic_level, 0.8)
+        traffic_factor = traffic_multipliers.get(traffic_level, 0.9)
         weather_factor = weather_multipliers.get(weather_condition, 1.0)
+        road_factor = road_multipliers.get(road_type, 1.0)
 
         adjusted_speed = base_speed * road_factor * traffic_factor * weather_factor
-
-        # Asegurar velocidad mínima razonable
-        adjusted_speed = max(adjusted_speed, 15.0)  # Mínimo 15 km/h
+        adjusted_speed = max(adjusted_speed, 35.0)  # Mínimo 35 km/h
 
         # Tiempo en horas
         travel_time = distance_km / adjusted_speed
 
-        # Agregar tiempo base mínimo para maniobras (más optimista)
-        base_time = 0.2  # Era 0.25, ahora 12 minutos en lugar de 15
+        # CORRECCIÓN: Tiempo base para paradas/maniobras más realista
+        stops_time = 0.5 + (distance_km / 200) * 0.5  # Más paradas en distancias largas
 
-        total_time = travel_time + base_time
-        return round(max(0.2, total_time), 2)  # Mínimo 12 minutos
+        total_time = travel_time + stops_time
+
+        logger.info(f"🚛 Viaje: {distance_km:.1f}km a {adjusted_speed:.1f}km/h = {total_time:.1f}h")
+
+        return round(max(0.5, total_time), 1)
 
     @staticmethod
     def calculate_optimal_route_sequence(locations: List[Dict[str, Any]],

@@ -4,7 +4,8 @@ from fastapi import APIRouter, HTTPException, Depends, status
 
 from config.settings import settings
 from models.schemas import PredictionRequest, PredictionResponse
-from services.fee_prediction_service import FEEPredictionService
+from services.data.repositories import OptimizedRepositories  # ✅ CORREGIDO
+from services.fee_prediction_service import FEEPredictionService  # ✅ CORREGIDO
 from utils.logger import logger
 
 router = APIRouter(prefix="/api/v1", tags=["🎯 Liverpool FEE System"])
@@ -12,10 +13,17 @@ _fee_service: FEEPredictionService = None
 
 
 def get_fee_service() -> FEEPredictionService:
-    """🔧 Dependency injection para FEE service"""
+    """🔧 Dependency injection para FEE service optimizado"""
     global _fee_service
     if _fee_service is None:
-        _fee_service = FEEPredictionService(settings.DATA_DIR)
+        # ✅ CORREGIDO: Inicializar repositorios optimizados primero
+        logger.info("🚀 Inicializando repositorios optimizados...")
+        repositories = OptimizedRepositories(settings.DATA_DIR)
+
+        logger.info("🎯 Inicializando servicio FEE optimizado...")
+        _fee_service = FEEPredictionService(repositories)
+
+        logger.info("✅ Servicio FEE optimizado listo!")
     return _fee_service
 
 
@@ -25,7 +33,7 @@ async def predict_delivery_fee(
         service: FEEPredictionService = Depends(get_fee_service)
 ):
     """
-     PREDICCIÓN INTELIGENTE FEE - MOTOR HÍBRIDO LightGBM + Gemini
+    🎯 PREDICCIÓN INTELIGENTE FEE - MOTOR HÍBRIDO LightGBM + Gemini
     """
 
     start_time = time.time()
@@ -53,13 +61,15 @@ async def predict_delivery_fee(
         return resultado
 
     except ValueError as e:
-        logger.error("❌ Error de validación", error=str(e))
+        processing_time = (time.time() - start_time) * 1000
+        logger.error("❌ Error de validación", error=str(e), processing_time_ms=processing_time)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
     except Exception as e:
-        logger.error("💥 Error interno", error=str(e))
+        processing_time = (time.time() - start_time) * 1000
+        logger.error("💥 Error interno", error=str(e), processing_time_ms=processing_time)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error interno del servidor: {str(e)}"

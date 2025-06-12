@@ -1,589 +1,268 @@
-import re
 import time
-from abc import ABC
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, List, Dict, Any
-
+from typing import Optional, List, Dict, Any, Tuple
 import polars as pl
-
 from config.settings import settings
 from utils.logger import logger
 
 
-class BaseRepository(ABC):
-    """ Repositorio base """
+class DataManager:
+    """🚀 Gestor de datos optimizado - CSVs en memoria, sin cache de respuestas"""
 
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
-        self._cache: Dict[str, pl.DataFrame] = {}
-        self._cache_timestamps: Dict[str, float] = {}
-        self.cache_ttl = settings.PERFORMANCE_THRESHOLDS['cache_ttl_minutes'] * 60
+        self._data: Dict[str, pl.DataFrame] = {}
+        self._load_time = None
+        self._load_all_csvs()
 
-    def _load_with_cache(self, filename: str, force_reload: bool = False) -> pl.DataFrame:
-        """ Carga CSV con cache automático"""
-        current_time = time.time()
+    def _load_all_csvs(self):
+        """📂 Carga TODOS los CSVs una vez en memoria"""
+        start_time = time.time()
 
-        if (force_reload or
-                filename not in self._cache or
-                current_time - self._cache_timestamps.get(filename, 0) > self.cache_ttl):
+        csv_files = {
+            'tiendas': 'liverpool_tiendas_completo.csv',
+            'productos': 'productos_liverpool_50.csv',
+            'stock': 'stock_tienda_sku.csv',
+            'cedis': 'cedis_liverpool_completo.csv',
+            'codigos_postales': 'codigos_postales_rangos_mexico.csv',
+            'factores_externos': 'factores_externos_mexico_completo.csv',
+            'flota_externa': 'flota_externa_costos_reales.csv',
+            'clima': 'clima_por_rango_cp.csv'
+        }
 
+        for key, filename in csv_files.items():
             file_path = self.data_dir / filename
-            if not file_path.exists():
-                raise FileNotFoundError(f"CSV no encontrado: {file_path}")
+            if file_path.exists():
+                self._data[key] = pl.read_csv(file_path)
+                logger.info(f"✅ {filename}: {self._data[key].height} registros")
+            else:
+                logger.warning(f"❌ CSV no encontrado: {filename}")
+                self._data[key] = pl.DataFrame()
 
-            logger.info(f"📂 Cargando CSV: {filename}")
-            df = pl.read_csv(file_path)
+        self._load_time = time.time() - start_time
+        logger.info(f"🚀 Todos los CSVs cargados en memoria: {self._load_time:.2f}s")
 
-            self._cache[filename] = df
-            self._cache_timestamps[filename] = current_time
-
-            logger.info(f"✅ CSV cargado: {filename} ({df.height} filas)")
-
-        return self._cache[filename]
-
-    @staticmethod
-    def _clean_coordinate_value(value: Any) -> float:
-        """ Limpia valores de coordenadas """
-        if value is None:
-            return 0.0
-
-        str_value = str(value).strip()
-        cleaned = re.sub(r'[^\d\.\-]', '', str_value)
-
-        try:
-            coord_float = float(cleaned)
-            return coord_float
-        except (ValueError, TypeError):
-            logger.warning(f"⚠️ Coordenada inválida: {value} -> usando 0.0")
-            return 0.0
-
-    @staticmethod
-    def _clean_id_value(value: Any) -> str:
-        """ Limpia valores de ID """
-        if value is None:
-            return ""
-
-        str_value = str(value).strip()
-        cleaned = re.sub(r'^\([^)]*\)', '', str_value).strip()
-        cleaned = re.sub(r'[^\w\-]', '', cleaned)
-
-        return cleaned if len(cleaned) >= 2 else ""
+    def get_data(self, key: str) -> pl.DataFrame:
+        """📊 Obtiene DataFrame desde memoria"""
+        return self._data.get(key, pl.DataFrame())
 
 
-class StoreRepository(BaseRepository):
-    """ Repositorio tiendas Liverpool"""
+class OptimizedProductRepository:
+    """📦 Repositorio de productos optimizado"""
 
-    def load_data(self) -> pl.DataFrame:
-        return self._load_with_cache(settings.CSV_FILES['tiendas'])
+    def __init__(self, data_manager: DataManager):
+        self.data_manager = data_manager
 
-    def get_store_by_id(self, tienda_id: str) -> Optional[Dict[str, Any]]:
-        """ Busca tienda por ID """
-        df = self.load_data()
-        clean_search_id = self._clean_id_value(tienda_id)
+    def get_product_by_sku(self, sku_id: str) -> Optional[Dict[str, Any]]:
+        """🔍 Busca producto por SKU"""
+        df = self.data_manager.get_data('productos')
+        result = df.filter(pl.col('sku_id') == sku_id)
 
-        for store in df.to_dicts():
-            try:
-                store_id_raw = store.get('tienda_id', '')
-                store_id_clean = self._clean_id_value(store_id_raw)
+        if result.height == 0:
+            logger.warning(f"❌ Producto no encontrado: {sku_id}")
+            return None
 
-                if store_id_clean == clean_search_id and store_id_clean:
-                    store['latitud'] = self._clean_coordinate_value(store.get('latitud'))
-                    store['longitud'] = self._clean_coordinate_value(store.get('longitud'))
-                    store['tienda_id'] = store_id_clean
+        product = result.to_dicts()[0]
+        logger.info(f"📦 Producto encontrado: {sku_id} - {product.get('nombre_producto', 'N/A')}")
+        return product
 
-                    if not (14.0 <= store['latitud'] <= 33.0 and -118.0 <= store['longitud'] <= -86.0):
-                        logger.warning(f"⚠️ Coordenadas fuera de México para {store_id_clean}")
-                        continue
 
-                    return store
+class OptimizedStoreRepository:
+    """🏪 Repositorio de tiendas optimizado"""
 
-            except Exception as e:
-                logger.warning(f"❌ Error procesando tienda {store_id_raw}: {e}")
-                continue
+    def __init__(self, data_manager: DataManager):
+        self.data_manager = data_manager
 
-        logger.warning(f"❌ Tienda no encontrada: {tienda_id}")
-        return None
-
-    def find_stores_by_postal_code_range(self, codigo_postal: str,
-                                         max_distance_km: float = 100.0) -> List[Dict[str, Any]]:
-        """ Encuentra tiendas cercanas por código postal"""
-        from utils.geo_calculator import GeoCalculator
-
-        postal_repo = PostalCodeRepository(self.data_dir)
-        cp_info = postal_repo.get_postal_code_info(codigo_postal)
-
+    def find_stores_by_postal_range(self, codigo_postal: str) -> List[Dict[str, Any]]:
+        """📍 Encuentra tiendas por rango de código postal"""
+        # 1. Primero buscar en qué rango está el CP
+        cp_info = self._get_postal_info(codigo_postal)
         if not cp_info:
             logger.warning(f"❌ CP no encontrado: {codigo_postal}")
             return []
 
-        cp_lat = cp_info.get('latitud_centro', 19.4326)
-        cp_lon = cp_info.get('longitud_centro', -99.1332)
-        stores_list = self._get_stores_by_region_first(codigo_postal[:2])
+        # 2. Buscar tiendas en el mismo estado/alcaldía
+        target_state = cp_info['estado_alcaldia']
+        tiendas_df = self.data_manager.get_data('tiendas')
 
-        if not stores_list:
-            df = self.load_data()
-            stores_list = df.to_dicts()
+        # Filtrar por estado/alcaldía similar
+        state_matches = tiendas_df.filter(
+            pl.col('estado').str.contains(target_state.split()[0]) |
+            pl.col('alcaldia_municipio').str.contains(target_state.split()[0])
+        )
 
-        nearby_stores = []
-        processed_count = 0
+        if state_matches.height == 0:
+            # Fallback: buscar en CDMX o Estado de México
+            fallback_states = ['Ciudad de México', 'Estado de México']
+            for state in fallback_states:
+                state_matches = tiendas_df.filter(pl.col('estado').str.contains(state))
+                if state_matches.height > 0:
+                    break
 
-        for store in stores_list:
+        stores = state_matches.to_dicts()
+
+        # 3. Calcular distancias reales
+        target_lat = cp_info['latitud_centro']
+        target_lon = cp_info['longitud_centro']
+
+        stores_with_distance = []
+        for store in stores:
             try:
-                processed_count += 1
-
-                tienda_id_raw = store.get('tienda_id', '')
-                tienda_id_clean = self._clean_id_value(tienda_id_raw)
-
-                if not tienda_id_clean:
-                    continue
-
-                store_lat = self._clean_coordinate_value(store.get('latitud'))
-                store_lon = self._clean_coordinate_value(store.get('longitud'))
-
-                if not (14.0 <= store_lat <= 33.0 and -118.0 <= store_lon <= -86.0):
-                    continue
-
+                from utils.geo_calculator import GeoCalculator
                 distance = GeoCalculator.calculate_distance_km(
-                    cp_lat, cp_lon, store_lat, store_lon
+                    target_lat, target_lon,
+                    float(store['latitud']), float(store['longitud'])
                 )
-
-                if distance <= max_distance_km:
-                    store_clean = store.copy()
-                    store_clean['tienda_id'] = tienda_id_clean
-                    store_clean['latitud'] = store_lat
-                    store_clean['longitud'] = store_lon
-                    store_clean['distancia_km'] = distance
-                    nearby_stores.append(store_clean)
-
+                store['distancia_km'] = distance
+                stores_with_distance.append(store)
             except Exception as e:
-                logger.warning(f"❌ Error procesando tienda {tienda_id_raw}: {e}")
-                continue
+                logger.warning(f"⚠️ Error calculando distancia para {store.get('tienda_id')}: {e}")
 
-        nearby_stores.sort(key=lambda x: x['distancia_km'])
+        # Ordenar por distancia
+        stores_with_distance.sort(key=lambda x: x['distancia_km'])
 
-        logger.info(f"📍 Encontradas {len(nearby_stores)} tiendas cercanas a {codigo_postal} "
-                    f"(procesadas {processed_count} tiendas)")
-        return nearby_stores
+        logger.info(f"📍 Tiendas encontradas para {codigo_postal}: {len(stores_with_distance)}")
+        for i, store in enumerate(stores_with_distance[:5]):
+            logger.info(f"  {i + 1}. {store['tienda_id']} - {store['nombre_tienda']} ({store['distancia_km']:.1f}km)")
 
-    def _get_stores_by_region_first(self, cp_prefix: str) -> List[Dict[str, Any]]:
-        """ Pre-filtro por región para optimizar búsqueda"""
+        return stores_with_distance
 
-        region_filters = {
-            '01': 'CDMX',
-            '02': 'CDMX',
-            '03': 'CDMX',
-            '04': 'CDMX',
-            '05': 'CDMX',
-            '06': 'CDMX',
-            '07': 'CDMX',
-            '08': 'CDMX',
-            '09': 'CDMX',
-            '10': 'Estado_Mexico',
-            '11': 'Estado_Mexico',
-            '12': 'Estado_Mexico',
-            '44': 'Jalisco',
-            '45': 'Jalisco',
-            '64': 'Nuevo_Leon',
-            '80': 'Sinaloa'
+    def _get_postal_info(self, codigo_postal: str) -> Optional[Dict[str, Any]]:
+        """🔍 Obtiene información del código postal"""
+        df = self.data_manager.get_data('codigos_postales')
+        cp_int = int(codigo_postal)
+
+        for row in df.to_dicts():
+            rango_cp = row.get('rango_cp', '')
+            if '-' in rango_cp:
+                try:
+                    start_cp, end_cp = map(int, rango_cp.split('-'))
+                    if start_cp <= cp_int <= end_cp:
+                        return row
+                except ValueError:
+                    continue
+
+        # Fallback: usar CDMX
+        return {
+            'rango_cp': codigo_postal,
+            'estado_alcaldia': 'Ciudad de México',
+            'zona_seguridad': 'Amarilla',
+            'latitud_centro': 19.4326,
+            'longitud_centro': -99.1332,
+            'cobertura_liverpool': True,
+            'tiempo_entrega_base_horas': '2-4'
         }
 
-        target_region = region_filters.get(cp_prefix)
-        if not target_region:
-            return []  # Si no conocemos la región, procesar todas
 
-        try:
-            df = self.load_data()
-            if 'estado' in df.columns:
-                filtered_df = df.filter(
-                    pl.col('estado').str.contains(target_region)
-                )
-                if filtered_df.height > 0:
-                    logger.info(f"📍 Pre-filtrado por región {target_region}: {filtered_df.height} tiendas")
-                    return filtered_df.to_dicts()
-            return []
+class OptimizedStockRepository:
+    """📦 Repositorio de stock optimizado"""
 
-        except Exception as e:
-            logger.warning(f"❌ Error en pre-filtro por región: {e}")
-            return []
+    def __init__(self, data_manager: DataManager):
+        self.data_manager = data_manager
 
+    def get_stock_for_stores_and_sku(self, sku_id: str, store_ids: List[str],
+                                     cantidad_requerida: int) -> List[Dict[str, Any]]:
+        """📊 Obtiene stock específico para tiendas y SKU"""
+        stock_df = self.data_manager.get_data('stock')
 
-class StockRepository(BaseRepository):
-    """📦 Repositorio OPTIMIZADO de inventarios con split inteligente"""
-
-    def load_data(self) -> pl.DataFrame:
-        return self._load_with_cache(settings.CSV_FILES['stock'])
-
-    def get_stock_locations_optimized(self, sku_id: str, cantidad_requerida: int,
-                                      nearby_store_ids: List[str] = None) -> List[Dict[str, Any]]:
-        """ Obtiene stock SOLO en tiendas cercanas"""
-
-        df = self.load_data()
-        if nearby_store_ids:
-            clean_nearby_ids = [self._clean_id_value(store_id) for store_id in nearby_store_ids]
-            stock_df = df.filter(pl.col('sku_id') == sku_id)
-            nearby_stock = []
-            for stock_row in stock_df.to_dicts():
-                clean_tienda_id = self._clean_id_value(stock_row.get('tienda_id', ''))
-                if (clean_tienda_id in clean_nearby_ids and
-                        stock_row.get('stock_disponible', 0) >= settings.MIN_STOCK_THRESHOLD):
-                    stock_row['tienda_id'] = clean_tienda_id
-                    nearby_stock.append(stock_row)
-
-            # Ordenar por stock disponible (descendente)
-            nearby_stock.sort(key=lambda x: x.get('stock_disponible', 0), reverse=True)
-
-            logger.info(f"📦 Stock en tiendas cercanas para {sku_id}: {len(nearby_stock)} ubicaciones")
-            return nearby_stock
-        return self.get_stock_locations(sku_id, cantidad_requerida)
-
-    def get_stock_locations(self, sku_id: str, cantidad_requerida: int) -> List[Dict[str, Any]]:
-        """📋 Obtiene ubicaciones con stock para un SKU (método original)"""
-        df = self.load_data()
-
-        stock_df = df.filter(
+        # Filtrar por SKU y tiendas
+        filtered_stock = stock_df.filter(
             (pl.col('sku_id') == sku_id) &
+            (pl.col('tienda_id').is_in(store_ids)) &
             (pl.col('stock_disponible') > 0)
         ).sort('stock_disponible', descending=True)
 
-        stock_locations = []
-        for location in stock_df.to_dicts():
-            tienda_id_raw = location.get('tienda_id', '')
-            tienda_id_clean = self._clean_id_value(tienda_id_raw)
+        stock_locations = filtered_stock.to_dicts()
 
-            if tienda_id_clean and location['stock_disponible'] >= settings.MIN_STOCK_THRESHOLD:
-                location['tienda_id'] = tienda_id_clean
-                stock_locations.append(location)
+        logger.info(f"📦 Stock encontrado para {sku_id} en {len(store_ids)} tiendas:")
+        total_available = 0
+        for stock in stock_locations:
+            total_available += stock['stock_disponible']
+            logger.info(f"  📍 {stock['tienda_id']}: {stock['stock_disponible']} unidades")
 
-        logger.info(f"📦 Stock disponible para {sku_id}: {len(stock_locations)} ubicaciones")
+        logger.info(f"📊 Stock total disponible: {total_available} | Requerido: {cantidad_requerida}")
+
         return stock_locations
 
-    def calculate_smart_split_inventory(self, sku_id: str, cantidad_requerida: int,
-                                        nearby_stores: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """🧠 SPLIT INTELIGENTE: evalúa opciones reales optimizado"""
-
-        nearby_store_ids = [store['tienda_id'] for store in nearby_stores]
-        stock_locations = self.get_stock_locations_optimized(
-            sku_id, cantidad_requerida, nearby_store_ids
-        )
-
-        if not stock_locations:
-            from models.schemas import SplitInventory
-
-            empty_split_inventory = SplitInventory(
-                ubicaciones=[],
-                cantidad_total_requerida=cantidad_requerida,
-                cantidad_total_disponible=0,
-                es_split_factible=False,
-                razon_split='Sin stock disponible en tiendas cercanas'
-            )
-
-            return {
-                'es_factible': False,
-                'razon': 'Sin stock disponible en tiendas cercanas',
-                'split_inventory': empty_split_inventory,
-                'split_plan': [],
-                'cantidad_cubierta': 0,
-                'cantidad_faltante': cantidad_requerida,
-                'opciones_evaluadas': 0
-            }
-
-        distance_map = {store['tienda_id']: store['distancia_km'] for store in nearby_stores}
-
-        single_store_options = []
-        for stock_loc in stock_locations:
-            if stock_loc['stock_disponible'] >= cantidad_requerida:
-                distance = distance_map.get(stock_loc['tienda_id'], 999)
-                single_store_options.append({
-                    'tipo': 'tienda_unica',
-                    'tienda_id': stock_loc['tienda_id'],
-                    'cantidad': cantidad_requerida,
-                    'stock_disponible': stock_loc['stock_disponible'],
-                    'distancia_km': distance,
-                    'complejidad': 1,
-                    'eficiencia_score': self._calculate_efficiency_score(cantidad_requerida, distance, 1)
-                })
-
-        multi_store_options = []
-        if len(stock_locations) > 1:
-            split_combinations = self._generate_split_combinations(
-                stock_locations, cantidad_requerida, distance_map, max_stores=3
-            )
-            multi_store_options.extend(split_combinations)
-        all_options = single_store_options + multi_store_options
-
-        if not all_options:
-            from models.schemas import SplitInventory
-
-            empty_split_inventory = SplitInventory(
-                ubicaciones=[],
-                cantidad_total_requerida=cantidad_requerida,
-                cantidad_total_disponible=sum(loc["stock_disponible"] for loc in stock_locations),
-                es_split_factible=False,
-                razon_split=f'Stock insuficiente. Disponible: {sum(loc["stock_disponible"] for loc in stock_locations)}, Requerido: {cantidad_requerida}'
-            )
-
-            return {
-                'es_factible': False,
-                'razon': f'Stock insuficiente. Disponible: {sum(loc["stock_disponible"] for loc in stock_locations)}, Requerido: {cantidad_requerida}',
-                'split_inventory': empty_split_inventory,
-                'split_plan': [],
-                'cantidad_cubierta': 0,
-                'cantidad_faltante': cantidad_requerida,
-                'opciones_evaluadas': 0
-            }
-
-        mejor_opcion = max(all_options, key=lambda x: x['eficiencia_score'])
-        if mejor_opcion['tipo'] == 'tienda_unica':
-            split_plan = [{
-                'tienda_id': mejor_opcion['tienda_id'],
-                'cantidad': mejor_opcion['cantidad'],
-                'stock_disponible': mejor_opcion['stock_disponible'],
-                'distancia_km': mejor_opcion['distancia_km'],
-                'prioridad': 1
-            }]
-        else:
-            split_plan = mejor_opcion['split_plan']
-        split_inventory_obj = self._build_split_inventory_object(split_plan, cantidad_requerida, nearby_stores)
-
-        return {
-            'es_factible': True,
-            'cantidad_cubierta': cantidad_requerida,
-            'cantidad_faltante': 0,
-            'split_inventory': split_inventory_obj,
-            'split_plan': split_plan,
-            'razon': f'Opción {mejor_opcion["tipo"]}: {len(split_plan)} ubicaciones (eficiencia: {mejor_opcion["eficiencia_score"]:.3f})',
-            'opciones_evaluadas': len(all_options),
-            'mejor_opcion': mejor_opcion
-        }
-
-    def _generate_split_combinations(self, stock_locations: List[Dict[str, Any]],
+    def calculate_optimal_allocation(self, stock_locations: List[Dict[str, Any]],
                                      cantidad_requerida: int,
-                                     distance_map: Dict[str, float],
-                                     max_stores: int = 3) -> List[Dict[str, Any]]:
-        """🔄 Genera combinaciones inteligentes de split"""
-
-        combinations = []
-        for i in range(len(stock_locations)):
-            for j in range(i + 1, len(stock_locations)):
-                combo = self._evaluate_two_store_combo(
-                    stock_locations[i], stock_locations[j],
-                    cantidad_requerida, distance_map
-                )
-                if combo and combo['cantidad_cubierta'] >= cantidad_requerida:
-                    combinations.append(combo)
-
-        if max_stores >= 3 and not combinations:
-            for i in range(len(stock_locations)):
-                for j in range(i + 1, len(stock_locations)):
-                    for k in range(j + 1, len(stock_locations)):
-                        combo = self._evaluate_three_store_combo(
-                            stock_locations[i], stock_locations[j], stock_locations[k],
-                            cantidad_requerida, distance_map
-                        )
-                        if combo and combo['cantidad_cubierta'] >= cantidad_requerida:
-                            combinations.append(combo)
-
-        return combinations
-
-    def _evaluate_two_store_combo(self, store1: Dict[str, Any], store2: Dict[str, Any],
-                                  cantidad_requerida: int, distance_map: Dict[str, float]) -> Dict[str, Any]:
-        """📊 Evalúa combinación de 2 tiendas"""
-
-        stock1 = store1['stock_disponible']
-        stock2 = store2['stock_disponible']
-
-        if stock1 + stock2 < cantidad_requerida:
-            return None
-
-        cantidad1 = min(stock1, cantidad_requerida)
-        cantidad2 = max(0, cantidad_requerida - cantidad1)
-
-        if cantidad2 > stock2:
-            return None
-
-        dist1 = distance_map.get(store1['tienda_id'], 999)
-        dist2 = distance_map.get(store2['tienda_id'], 999)
-
-        split_plan = [
-            {
-                'tienda_id': store1['tienda_id'],
-                'cantidad': cantidad1,
-                'stock_disponible': stock1,
-                'distancia_km': dist1,
-                'prioridad': 1
-            },
-            {
-                'tienda_id': store2['tienda_id'],
-                'cantidad': cantidad2,
-                'stock_disponible': stock2,
-                'distancia_km': dist2,
-                'prioridad': 2
+                                     stores_info: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """🧠 Calcula asignación óptima de stock"""
+        if not stock_locations:
+            return {
+                'factible': False,
+                'razon': 'Sin stock disponible',
+                'plan': []
             }
-        ]
 
-        total_distance = dist1 + dist2
-        eficiencia_score = self._calculate_efficiency_score(cantidad_requerida, total_distance, 2)
+        # Crear mapa de distancias
+        distance_map = {store['tienda_id']: store['distancia_km'] for store in stores_info}
 
-        return {
-            'tipo': 'dos_tiendas',
-            'split_plan': split_plan,
-            'cantidad_cubierta': cantidad1 + cantidad2,
-            'distancia_total': total_distance,
-            'complejidad': 2,
-            'eficiencia_score': eficiencia_score
-        }
+        # Ordenar por preferencia: stock alto + distancia corta
+        def preference_score(stock):
+            stock_score = stock['stock_disponible'] / 10.0  # Normalizar
+            distance_penalty = distance_map.get(stock['tienda_id'], 999) / 100.0
+            return stock_score - distance_penalty
 
-    def _evaluate_three_store_combo(self, store1: Dict[str, Any], store2: Dict[str, Any],
-                                    store3: Dict[str, Any], cantidad_requerida: int,
-                                    distance_map: Dict[str, float]) -> Dict[str, Any]:
-        """📊 Evalúa combinación de 3 tiendas"""
+        stock_locations.sort(key=preference_score, reverse=True)
 
-        stock1 = store1['stock_disponible']
-        stock2 = store2['stock_disponible']
-        stock3 = store3['stock_disponible']
+        # Asignar stock de manera óptima
+        plan = []
+        cantidad_cubierta = 0
 
-        if stock1 + stock2 + stock3 < cantidad_requerida:
-            return None
-
-        stores = [
-            (store1, stock1, distance_map.get(store1['tienda_id'], 999)),
-            (store2, stock2, distance_map.get(store2['tienda_id'], 999)),
-            (store3, stock3, distance_map.get(store3['tienda_id'], 999))
-        ]
-
-        stores.sort(key=lambda x: x[2])
-
-        split_plan = []
-        cantidad_pendiente = cantidad_requerida
-        total_distance = 0
-
-        for i, (store, stock, distance) in enumerate(stores):
-            if cantidad_pendiente <= 0:
+        for stock in stock_locations:
+            if cantidad_cubierta >= cantidad_requerida:
                 break
 
-            cantidad_a_tomar = min(stock, cantidad_pendiente)
+            cantidad_a_tomar = min(
+                stock['stock_disponible'],
+                cantidad_requerida - cantidad_cubierta
+            )
 
-            split_plan.append({
-                'tienda_id': store['tienda_id'],
+            plan.append({
+                'tienda_id': stock['tienda_id'],
                 'cantidad': cantidad_a_tomar,
-                'stock_disponible': stock,
-                'distancia_km': distance,
-                'prioridad': i + 1
+                'stock_disponible': stock['stock_disponible'],
+                'distancia_km': distance_map.get(stock['tienda_id'], 0),
+                'precio_tienda': stock.get('precio_tienda', 0)
             })
 
-            cantidad_pendiente -= cantidad_a_tomar
-            total_distance += distance
+            cantidad_cubierta += cantidad_a_tomar
 
-        if cantidad_pendiente > 0:
-            return None
-
-        eficiencia_score = self._calculate_efficiency_score(cantidad_requerida, total_distance, 3)
+        logger.info(f"📋 Plan de asignación:")
+        for item in plan:
+            logger.info(f"  🏪 {item['tienda_id']}: {item['cantidad']} unidades (${item['precio_tienda']})")
 
         return {
-            'tipo': 'tres_tiendas',
-            'split_plan': split_plan,
-            'cantidad_cubierta': cantidad_requerida,
-            'distancia_total': total_distance,
-            'complejidad': 3,
-            'eficiencia_score': eficiencia_score
+            'factible': cantidad_cubierta >= cantidad_requerida,
+            'plan': plan,
+            'cantidad_cubierta': cantidad_cubierta,
+            'cantidad_faltante': max(0, cantidad_requerida - cantidad_cubierta),
+            'razon': f'Plan con {len(plan)} tiendas' if plan else 'Sin stock suficiente'
         }
 
-    @staticmethod
-    def _calculate_efficiency_score(cantidad: int, distancia_total: float, complejidad: int) -> float:
-        """📊 Calcula score de eficiencia para comparar opciones"""
 
-        # Penalizar distancia y complejidad
-        distance_penalty = min(1.0, distancia_total / 100.0)  # Normalizar a 100km
-        complexity_penalty = (complejidad - 1) * 0.2  # 20% de penalización por tienda adicional
+class OptimizedExternalFactorsRepository:
+    """🌤️ Repositorio de factores externos optimizado"""
 
-        # Bonus por cantidad (economías de escala)
-        quantity_bonus = min(0.3, cantidad / 10.0)  # Hasta 30% bonus por cantidad
+    def __init__(self, data_manager: DataManager):
+        self.data_manager = data_manager
 
-        # Score final (0-1, donde 1 es mejor)
-        score = 1.0 - distance_penalty - complexity_penalty + quantity_bonus
-
-        return max(0.1, min(1.0, score))
-
-    @staticmethod
-    def _build_split_inventory_object(split_plan: List[Dict[str, Any]],
-                                      cantidad_requerida: int,
-                                      nearby_stores: List[Dict[str, Any]]):
-        """🏗️ Construye objeto SplitInventory requerido por el sistema"""
-        from models.schemas import SplitInventory, UbicacionStock
-        from config.settings import settings
-
-        # Crear diccionario de tiendas para acceso rápido
-        stores_map = {store['tienda_id']: store for store in nearby_stores}
-
-        ubicaciones_split = []
-        for location_plan in split_plan:
-            tienda_id = location_plan['tienda_id']
-            store_info = stores_map.get(tienda_id)
-
-            if store_info:
-                ubicacion_split = UbicacionStock(
-                    ubicacion_id=tienda_id,
-                    ubicacion_tipo='TIENDA',
-                    nombre_ubicacion=store_info.get('nombre_tienda', f"Tienda {tienda_id}"),
-                    stock_disponible=location_plan['cantidad'],
-                    stock_reservado=0,
-                    coordenadas={
-                        'lat': store_info['latitud'],
-                        'lon': store_info['longitud']
-                    },
-                    horario_operacion=store_info.get('horario_operacion', '09:00-21:00'),
-                    tiempo_preparacion_horas=settings.TIEMPO_PICKING_PACKING
-                )
-                ubicaciones_split.append(ubicacion_split)
-
-        cantidad_total_disponible = sum(loc['cantidad'] for loc in split_plan)
-
-        split_inventory = SplitInventory(
-            ubicaciones=ubicaciones_split,
-            cantidad_total_requerida=cantidad_requerida,
-            cantidad_total_disponible=cantidad_total_disponible,
-            es_split_factible=True,
-            razon_split=f"Split optimizado: {len(split_plan)} ubicaciones"
-        )
-
-        return split_inventory
-
-
-class ExternalFactorsRepository(BaseRepository):
-    """🌐 Repositorio MEJORADO de factores externos"""
-
-    def load_data(self) -> pl.DataFrame:
-        return self._load_with_cache(settings.CSV_FILES['factores_externos'])
-
-    def get_factors_by_date_and_region(self, fecha: datetime,
-                                       codigo_postal: str) -> Dict[str, Any]:
-        """📅 MEJORADO: Busca factores REALES en CSV primero"""
-
-        df = self.load_data()
+    def get_factors_for_date_and_cp(self, fecha: datetime, codigo_postal: str) -> Dict[str, Any]:
+        """📅 Obtiene factores externos por fecha y CP"""
+        df = self.data_manager.get_data('factores_externos')
         fecha_str = fecha.date().isoformat()
 
         # Buscar por fecha exacta
         exact_match = df.filter(pl.col('fecha') == fecha_str)
 
         if exact_match.height > 0:
-            # Si hay múltiples registros, filtrar por CP
-            if 'rango_cp_afectado' in df.columns:
-                cp_prefix = codigo_postal[:2]
-                cp_filtered = exact_match.filter(
-                    pl.col('rango_cp_afectado').str.contains(cp_prefix)
-                )
-                if cp_filtered.height > 0:
-                    factors = cp_filtered.to_dicts()[0]
-                else:
-                    factors = exact_match.to_dicts()[0]
-            else:
-                factors = exact_match.to_dicts()[0]
+            factors = exact_match.to_dicts()[0]
+            logger.info(f"📅 Factores REALES encontrados para {fecha_str}")
+            return self._process_factors(factors, fecha, codigo_postal)
 
-            logger.info(f"📅 Factores REALES encontrados en CSV para {fecha_str}")
-            return self._process_real_factors(factors, fecha, codigo_postal)
-
-        # Buscar fechas cercanas (±3 días)
+        # Buscar fechas cercanas
         for delta in range(1, 4):
             for direction in [-1, 1]:
                 check_date = fecha + timedelta(days=delta * direction)
@@ -593,281 +272,115 @@ class ExternalFactorsRepository(BaseRepository):
                 if nearby_match.height > 0:
                     factors = nearby_match.to_dicts()[0]
                     logger.info(f"📅 Usando factores de fecha cercana: {check_str}")
-                    return self._process_real_factors(factors, fecha, codigo_postal)
+                    return self._process_factors(factors, fecha, codigo_postal)
 
-        # Si no hay datos reales, generar automáticamente
+        # Generar factores automáticos
         logger.info(f"🤖 Generando factores automáticos para {fecha_str}")
-        return self._generate_auto_factors(fecha, codigo_postal)
+        return self._generate_factors(fecha, codigo_postal)
 
-    @staticmethod
-    def _process_real_factors(factors: Dict[str, Any], fecha: datetime, codigo_postal: str) -> Dict[str, Any]:
-        """🔄 Procesa factores REALES del CSV"""
+    def _process_factors(self, factors: Dict[str, Any], fecha: datetime, cp: str) -> Dict[str, Any]:
+        """🔄 Procesa factores del CSV"""
 
-        return {
-            'fecha': fecha.date().isoformat(),
+        # Extraer factor de demanda
+        factor_demanda_raw = factors.get('factor_demanda', '1.0')
+        if isinstance(factor_demanda_raw, str) and '/' in factor_demanda_raw:
+            try:
+                num, den = map(float, factor_demanda_raw.split('/'))
+                factor_demanda = num / den
+            except:
+                factor_demanda = 1.0
+        else:
+            factor_demanda = float(factor_demanda_raw)
+
+        # Calcular impactos
+        impacto_tiempo = self._calculate_time_impact(factor_demanda, factors)
+        impacto_costo = self._calculate_cost_impact(factor_demanda, factors)
+
+        result = {
             'evento_detectado': factors.get('evento_detectado', 'Normal'),
-            'factor_demanda': float(factors.get('factor_demanda', 1.0)),
+            'factor_demanda': factor_demanda,
             'condicion_clima': factors.get('condicion_clima', 'Templado'),
             'trafico_nivel': factors.get('trafico_nivel', 'Moderado'),
-            'rango_cp_afectado': factors.get('rango_cp_afectado', f"{codigo_postal[:2]}000-{codigo_postal[:2]}999"),
-            'impacto_tiempo_extra_horas': float(factors.get('impacto_tiempo_extra_horas', 0)),
-            'impacto_costo_extra_pct': float(factors.get('impacto_costo_extra_pct', 0)),
             'criticidad_logistica': factors.get('criticidad_logistica', 'Normal'),
+            'impacto_tiempo_extra_horas': impacto_tiempo,
+            'impacto_costo_extra_pct': impacto_costo,
+            'es_temporada_alta': factor_demanda > 1.8,
+            'es_temporada_critica': factor_demanda > 2.5,
             'fuente_datos': 'CSV_real'
         }
 
-    @staticmethod
-    def _generate_auto_factors(fecha: datetime, codigo_postal: str) -> Dict[str, Any]:
-        """🤖 Genera factores automáticamente con lógica mejorada"""
+        logger.info(
+            f"🌤️ Factores procesados: demanda={factor_demanda:.2f}, tiempo_extra={impacto_tiempo}h, costo_extra={impacto_costo}%")
+        return result
+
+    def _calculate_time_impact(self, factor_demanda: float, factors: Dict[str, Any]) -> float:
+        """⏱️ Calcula impacto en tiempo"""
+        base_impact = max(0, (factor_demanda - 1.0) * 2.0)
+
+        # Eventos críticos
+        evento = factors.get('evento_detectado', '')
+        if any(critical in evento for critical in ['Navidad', 'Nochebuena', 'Buen_Fin']):
+            base_impact += 3.0
+
+        return round(min(8.0, base_impact), 1)
+
+    def _calculate_cost_impact(self, factor_demanda: float, factors: Dict[str, Any]) -> float:
+        """💰 Calcula impacto en costo"""
+        base_impact = max(0, (factor_demanda - 1.0) * 15)
+
+        # Eventos premium
+        evento = factors.get('evento_detectado', '')
+        if any(premium in evento for premium in ['Navidad', 'Nochebuena', 'Buen_Fin']):
+            base_impact += 20.0
+
+        return round(min(50.0, base_impact), 1)
+
+    def _generate_factors(self, fecha: datetime, cp: str) -> Dict[str, Any]:
+        """🤖 Genera factores automáticos"""
         from utils.temporal_detector import TemporalFactorDetector
-
-        # Usar el detector temporal para generar factores inteligentes
-        detected_factors = TemporalFactorDetector.detect_comprehensive_factors(fecha, codigo_postal)
-
-        return {
-            'fecha': fecha.date().isoformat(),
-            'evento_detectado': detected_factors['eventos_detectados'][0] if detected_factors[
-                'eventos_detectados'] else 'Normal',
-            'factor_demanda': detected_factors['factor_demanda'],
-            'condicion_clima': detected_factors['condicion_clima'],
-            'trafico_nivel': detected_factors['trafico_nivel'],
-            'rango_cp_afectado': f"{codigo_postal[:2]}000-{codigo_postal[:2]}999",
-            'impacto_tiempo_extra_horas': detected_factors['impacto_tiempo_extra_horas'],
-            'impacto_costo_extra_pct': detected_factors['impacto_costo_extra_pct'],
-            'criticidad_logistica': detected_factors['criticidad_logistica'],
-            'fuente_datos': 'generado_automatico'
-        }
+        return TemporalFactorDetector.detect_comprehensive_factors(fecha, cp)
 
 
-# Los demás repositorios mantienen su implementación original
-class ProductRepository(BaseRepository):
-    """📦 Repositorio de productos Liverpool"""
+class OptimizedFleetRepository:
+    """🚚 Repositorio de flota externa optimizado"""
 
-    def load_data(self) -> pl.DataFrame:
-        return self._load_with_cache(settings.CSV_FILES['productos'])
+    def __init__(self, data_manager: DataManager):
+        self.data_manager = data_manager
 
-    def get_product_by_sku(self, sku_id: str) -> Optional[Dict[str, Any]]:
-        """🔍 Busca producto por SKU con validación avanzada"""
-        df = self.load_data()
-        result = df.filter(pl.col('sku_id') == sku_id)
+    def get_best_carriers_for_cp(self, codigo_postal: str, peso_kg: float) -> List[Dict[str, Any]]:
+        """🚛 Obtiene mejores carriers para CP y peso"""
+        df = self.data_manager.get_data('flota_externa')
+        cp_int = int(codigo_postal)
 
-        if result.height == 0:
-            logger.warning(f"❌ Producto no encontrado: {sku_id}")
-            return None
-
-        product_dict = result.to_dicts()[0]
-
-        if product_dict.get('peso_kg', 0) > 30:
-            logger.warning(f"⚠️ Producto pesado detectado: {product_dict['peso_kg']}kg")
-
-        if product_dict.get('es_fragil', False):
-            logger.info(f"🔸 Producto frágil detectado: {sku_id}")
-
-        return product_dict
-
-    def check_seasonal_availability(self, sku_id: str, fecha: datetime) -> bool:
-        """🗓️ Verifica disponibilidad estacional"""
-        product = self.get_product_by_sku(sku_id)
-        if not product:
-            return False
-
-        temporada_producto = product.get('temporada', 'Todo_Año')
-        mes_actual = fecha.month
-
-        if temporada_producto == 'Todo_Año':
-            return True
-        elif temporada_producto == 'Invierno' and mes_actual in [12, 1, 2]:
-            return True
-        elif temporada_producto == 'Verano' and mes_actual in [6, 7, 8]:
-            return True
-
-        return temporada_producto == 'Todo_Año'
-
-
-class CEDISRepository(BaseRepository):
-    """🏭 Repositorio de CEDIS"""
-
-    def load_data(self) -> pl.DataFrame:
-        return self._load_with_cache(settings.CSV_FILES['cedis'])
-
-    def get_cedis_by_id(self, cedis_id: str) -> Optional[Dict[str, Any]]:
-        """🔍 Busca CEDIS por ID con limpieza robusta"""
-        df = self.load_data()
-        clean_search_id = self._clean_id_value(cedis_id)
-
-        for cedis in df.to_dicts():
-            try:
-                cedis_id_raw = cedis.get('cedis_id', '')
-                cedis_id_clean = self._clean_id_value(cedis_id_raw)
-
-                if cedis_id_clean == clean_search_id and cedis_id_clean:
-                    cedis['latitud'] = self._clean_coordinate_value(cedis.get('latitud'))
-                    cedis['longitud'] = self._clean_coordinate_value(cedis.get('longitud'))
-                    cedis['cedis_id'] = cedis_id_clean
-
-                    if 14.0 <= cedis['latitud'] <= 33.0 and -118.0 <= cedis['longitud'] <= -86.0:
-                        return cedis
-
-            except Exception as e:
-                logger.warning(f"❌ Error procesando CEDIS {cedis_id_raw}: {e}")
-                continue
-
-        logger.warning(f"❌ CEDIS no encontrado: {cedis_id}")
-        return None
-
-
-class PostalCodeRepository(BaseRepository):
-    """📮 Repositorio de códigos postales y rangos"""
-
-    def load_data(self) -> pl.DataFrame:
-        return self._load_with_cache(settings.CSV_FILES['codigos_postales'])
-
-    def get_postal_code_info(self, codigo_postal: str) -> Optional[Dict[str, Any]]:
-        """🔍 Obtiene información de código postal mejorado"""
-        df = self.load_data()
-
-        try:
-            cp_int = int(codigo_postal)
-        except ValueError:
-            logger.warning(f"❌ CP inválido: {codigo_postal}")
-            return None
-
-        for row in df.to_dicts():
-            try:
-                rango_cp = str(row.get('rango_cp', '')).strip()
-                rango_cp_clean = self._clean_id_value(rango_cp)
-
-                if '-' in rango_cp_clean:
-                    parts = rango_cp_clean.split('-')
-                    if len(parts) == 2:
-                        try:
-                            start_cp = int(parts[0].strip())
-                            end_cp = int(parts[1].strip())
-
-                            if start_cp <= cp_int <= end_cp:
-                                return self._process_postal_info(row)
-                        except ValueError:
-                            continue
-                elif rango_cp_clean.isdigit():
-                    if int(rango_cp_clean) == cp_int:
-                        return self._process_postal_info(row)
-
-            except Exception as e:
-                logger.warning(f"❌ Error procesando rango CP {rango_cp}: {e}")
-                continue
-
-        logger.warning(f"❌ CP no encontrado: {codigo_postal}, usando default CDMX")
-        return {
-            'rango_cp': codigo_postal,
-            'estado_alcaldia': 'Ciudad de México',
-            'zona_seguridad': 'Media',
-            'latitud_centro': 19.4326,
-            'longitud_centro': -99.1332,
-            'cobertura_liverpool': True,
-            'tiempo_entrega_base_horas': '24-48',
-            'observaciones': 'Default CDMX'
-        }
-
-    def _process_postal_info(self, row: Dict[str, Any]) -> Dict[str, Any]:
-        """🔧 Procesa información de CP limpiando coordenadas"""
-        processed = row.copy()
-
-        processed['latitud_centro'] = self._clean_coordinate_value(row.get('latitud_centro'))
-        processed['longitud_centro'] = self._clean_coordinate_value(row.get('longitud_centro'))
-
-        if not (14.0 <= processed['latitud_centro'] <= 33.0 and
-                -118.0 <= processed['longitud_centro'] <= -86.0):
-            logger.warning(f"⚠️ Coordenadas fuera de México, usando CDMX")
-            processed['latitud_centro'] = 19.4326
-            processed['longitud_centro'] = -99.1332
-
-        return processed
-
-    def is_zona_roja(self, codigo_postal: str) -> bool:
-        """Detecta zona roja"""
-        cp_info = self.get_postal_code_info(codigo_postal)
-        if not cp_info:
-            return False
-
-        zona_seguridad = str(cp_info.get('zona_seguridad', '')).lower()
-        return zona_seguridad in ['roja', 'alta', 'crítica']
-
-
-class ClimateRepository(BaseRepository):
-    """ Repositorio de datos climáticos"""
-
-    def load_data(self) -> pl.DataFrame:
-        return self._load_with_cache(settings.CSV_FILES['clima'])
-
-    def get_climate_by_postal_code(self, codigo_postal: str, fecha: datetime) -> Dict[str, Any]:
-        """Obtiene datos climáticos por CP y fecha"""
-        return self._get_default_climate(fecha)
-
-    @staticmethod
-    def _get_default_climate(fecha: datetime) -> Dict[str, Any]:
-        """ Clima por defecto"""
-        return {
-            'clima_actual': 'Templado',
-            'temperatura': 22,
-            'precipitacion_mm': 30,
-            'factor_clima': 1.0
-        }
-
-
-class ExternalFleetRepository(BaseRepository):
-    """ Repositorio de flota externa"""
-
-    def load_data(self) -> pl.DataFrame:
-        return self._load_with_cache(settings.CSV_FILES['flota_externa'])
-
-    def get_available_carriers(self, codigo_postal: str, peso_kg: float) -> List[Dict[str, Any]]:
-        """ Obtiene carriers disponibles para CP y peso"""
-        df = self.load_data()
-
-        try:
-            cp_int = int(codigo_postal)
-        except ValueError:
-            return []
-
-        carriers = df.filter(
+        # Filtrar carriers disponibles
+        available = df.filter(
             (pl.col('activo') == True) &
-            (cp_int >= pl.col('zona_cp_inicio')) &
-            (cp_int <= pl.col('zona_cp_fin')) &
-            (peso_kg >= pl.col('peso_min_kg')) &
-            (peso_kg <= pl.col('peso_max_kg'))
+            (pl.col('zona_cp_inicio') <= cp_int) &
+            (pl.col('zona_cp_fin') >= cp_int) &
+            (pl.col('peso_min_kg') <= peso_kg) &
+            (pl.col('peso_max_kg') >= peso_kg)
         ).sort('costo_base_mxn')
 
-        carriers_list = carriers.to_dicts()
-        logger.info(f"🚚 Carriers disponibles para {codigo_postal}: {len(carriers_list)}")
-        return carriers_list
+        carriers = available.to_dicts()
 
-    @staticmethod
-    def calculate_external_cost(carrier_info: Dict[str, Any],
-                                peso_kg: float, distancia_km: float) -> float:
-        """Calcula costo de flota externa"""
-        costo_base = carrier_info['costo_base_mxn']
-        peso_extra = max(0, peso_kg - carrier_info['peso_min_kg'])
-        costo_peso_extra = peso_extra * carrier_info['costo_por_kg_adicional']
-        factor_distancia = 1.0 + (distancia_km / 1000) * 0.1
+        logger.info(f"🚚 Carriers disponibles para {codigo_postal} ({peso_kg}kg): {len(carriers)}")
+        for carrier in carriers:
+            logger.info(
+                f"  📦 {carrier['carrier']}: ${carrier['costo_base_mxn']} base ({carrier['tiempo_entrega_dias_habiles']} días)")
 
-        costo_total = (costo_base + costo_peso_extra) * factor_distancia
+        return carriers
 
-        return round(costo_total, 2)
 
-    @staticmethod
-    def get_delivery_time_for_carrier(carrier_info: Dict[str, Any]) -> tuple:
-        """Obtiene tiempo de entrega del carrier"""
-        tiempo_str = carrier_info.get('tiempo_entrega_dias_habiles', '3-5')
+# Repositorio unificado
+class OptimizedRepositories:
+    """🎯 Repositorios optimizados unificados"""
 
-        try:
-            if '-' in tiempo_str:
-                min_days, max_days = map(int, tiempo_str.split('-'))
-            else:
-                min_days = max_days = int(tiempo_str)
-            min_hours = min_days * 24
-            max_hours = max_days * 24
+    def __init__(self, data_dir: Path):
+        self.data_manager = DataManager(data_dir)
+        self.product = OptimizedProductRepository(self.data_manager)
+        self.store = OptimizedStoreRepository(self.data_manager)
+        self.stock = OptimizedStockRepository(self.data_manager)
+        self.external_factors = OptimizedExternalFactorsRepository(self.data_manager)
+        self.fleet = OptimizedFleetRepository(self.data_manager)
 
-            return min_hours, max_hours
-        except (ValueError, AttributeError):
-            # Fallback: 3-5 días
-            return 72.0, 120.0
+        logger.info("🚀 Repositorios optimizados inicializados")
