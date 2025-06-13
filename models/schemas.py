@@ -205,28 +205,15 @@ class ExplicabilidadCompleta(BaseModel):
 
 
 class PredictionResponse(BaseModel):
-    """📤 Respuesta final del sistema"""
-
-    fecha_entrega_estimada: datetime = Field(..., description="FEE final")
-    rango_horario: Dict[str, str] = Field(
-        ..., description="Rango de horario de entrega"
-    )
-
-
-    ruta_seleccionada: RutaCompleta = Field(..., description="Ruta ganadora")
-    tipo_entrega: TipoEntregaEnum = Field(..., description="Tipo de entrega")
-    carrier_principal: str = Field(..., description="Carrier responsable")
-
-
-    costo_envio_mxn: float = Field(..., ge=0, description="Costo total")
-    probabilidad_cumplimiento: float = Field(..., ge=0, le=1)
-    confianza_prediccion: float = Field(..., ge=0, le=1)
-
-
-    explicabilidad: ExplicabilidadCompleta = Field(
-        ..., description="Explicabilidad completa"
-    )
-
-    # Metadatos
-    timestamp_response: datetime = Field(default_factory=datetime.now)
-    version_sistema: str = Field(default="3.0.0")
+    fecha_entrega_estimada: datetime
+    rango_horario: Dict[str, str]
+    ruta_seleccionada: RutaCompleta
+    tipo_entrega: TipoEntregaEnum
+    carrier_principal: str
+    costo_envio_mxn: float
+    probabilidad_cumplimiento: float
+    confianza_prediccion: float
+    explicabilidad: ExplicabilidadCompleta
+    explicabilidad_extendida: Optional[Dict[str, Any]] = None  # ✅ ESTE CAMPO
+    timestamp_response: Optional[datetime] = None  # ✅ ESTE CAMPO
+    version_sistema: Optional[str] = None  # ✅ ESTE CAMPO

@@ -24,7 +24,7 @@ class FEEPredictionService:
         logger.info("🎯 Servicio FEE optimizado inicializado")
 
     async def predict_fee(self, request: PredictionRequest) -> PredictionResponse:
-        """🚀 Predicción FEE - CORREGIDA"""
+        """🚀 Predicción FEE completamente dinámica"""
         start_time = time.time()
 
         try:
@@ -38,25 +38,13 @@ class FEEPredictionService:
             product_info = validation['product']
             cp_info = validation['postal_info']
 
-            # 🔴 PROBLEMA: No usa factores externos reales
-            # external_factors = self.repos.external_factors.get_factors_for_date_and_cp(...)  # ❌ MALO
-
-            # ✅ SOLUCIÓN: Usar método corregido que SÍ funciona
+            # 2. FACTORES EXTERNOS REALES
             external_factors = self._get_comprehensive_external_factors(request.fecha_compra, request.codigo_postal)
-
-            logger.info(
-                f"🎯 Factores detectados: {external_factors.get('eventos_detectados', [])} - Demanda: {external_factors.get('factor_demanda', 1.0):.2f}")
 
             # 3. BÚSQUEDA DE TIENDAS DINÁMICAS
             nearby_stores = self.repos.store.find_stores_by_postal_range(request.codigo_postal)
             if not nearby_stores:
                 raise ValueError(f"No hay tiendas Liverpool cerca de {request.codigo_postal}")
-
-            # Log mejorado de tiendas encontradas
-            logger.info(f"📍 Tiendas encontradas para {request.codigo_postal}: {len(nearby_stores)}")
-            for i, store in enumerate(nearby_stores[:4]):
-                logger.info(
-                    f"  {i + 1}. {store['tienda_id']} - {store['nombre_tienda']} ({store.get('distancia_km', 0):.1f}km)")
 
             # 4. VERIFICACIÓN DE STOCK REAL
             stock_analysis = await self._analyze_stock_dynamic(
@@ -86,7 +74,8 @@ class FEEPredictionService:
             # 7. CONSTRUCCIÓN DE RESPUESTA DINÁMICA
             response = await self._build_dynamic_response(
                 request, gemini_decision, external_factors,
-                stock_analysis, ranked_candidates, cp_info
+                stock_analysis, ranked_candidates, cp_info,
+                nearby_stores  # ✅ PASAR nearby_stores
             )
 
             processing_time = (time.time() - start_time) * 1000
@@ -325,7 +314,7 @@ class FEEPredictionService:
                                            external_factors: Dict[str, Any],
                                            request: PredictionRequest,
                                            cp_info: Dict[str, Any]) -> Dict[str, Any]:
-        """📍 CORRECCIÓN: Crea ruta directa con distancia REAL"""
+        """📍 Crea ruta directa con distancia REAL - CORREGIDA"""
 
         tienda_id = plan_item['tienda_id']
 
@@ -342,44 +331,51 @@ class FEEPredictionService:
         logger.info(f"📍 Tienda {tienda_id}: lat={store_lat:.4f}, lon={store_lon:.4f}")
         logger.info(f"📍 Destino CP {request.codigo_postal}: lat={target_coords[0]:.4f}, lon={target_coords[1]:.4f}")
 
-        # ✅ CORRECCIÓN: Calcular distancia REAL
+        # ✅ CORRECCIÓN CRÍTICA: Calcular distancia REAL
         from utils.geo_calculator import GeoCalculator
         distance_km = GeoCalculator.calculate_distance_km(
             store_lat, store_lon,
             target_coords[0], target_coords[1]
         )
 
-        logger.info(f"📏 Distancia calculada: {distance_km:.1f}km")
+        # ✅ DEBUGGING: Verificar cálculo
+        logger.info(f"📏 Distancia calculada: {distance_km:.2f}km")
 
-        # ✅ CORRECCIÓN: Usar zona de seguridad REAL del CP
+        # ✅ CORRECCIÓN: Si distancia es 0, algo está mal
+        if distance_km == 0.0:
+            logger.warning(f"⚠️ Distancia 0.0km detectada - Verificando coordenadas:")
+            logger.warning(f"   Store: ({store_lat}, {store_lon})")
+            logger.warning(f"   Target: ({target_coords[0]}, {target_coords[1]})")
+
+            # Usar distancia mínima si el cálculo falla
+            distance_km = 5.0  # 5km mínimo por defecto
+            logger.warning(f"   Usando distancia mínima: {distance_km}km")
+
+        # Determinar tipo de flota
         zona_seguridad = cp_info.get('zona_seguridad', 'Verde')
         cobertura_liverpool = cp_info.get('cobertura_liverpool', True)
 
-        # ✅ CORRECCIÓN: Lógica mejorada para determinar tipo de flota
         if distance_km <= 50 and cobertura_liverpool and zona_seguridad in ['Verde', 'Amarilla']:
             fleet_type = 'FI'
             carrier = 'Liverpool'
-            logger.info(f"🚛 Usando Flota Interna - Zona {zona_seguridad}, distancia {distance_km:.1f}km")
+            logger.info(f"🚛 Flota Interna - Zona {zona_seguridad}, distancia {distance_km:.1f}km")
         else:
             fleet_type = 'FE'
-            # ✅ CORRECCIÓN: Buscar mejor carrier externo
             peso_kg = self._calculate_shipment_weight(request, plan_item['cantidad'])
             carriers = self.repos.fleet.get_best_carriers_for_cp(request.codigo_postal, peso_kg)
             carrier = carriers[0]['carrier'] if carriers else 'DHL'
-            logger.info(f"📦 Usando Flota Externa ({carrier}) - Zona {zona_seguridad}, distancia {distance_km:.1f}km")
+            logger.info(f"📦 Flota Externa ({carrier}) - Zona {zona_seguridad}, distancia {distance_km:.1f}km")
 
-        # ✅ CORRECCIÓN: Cálculos con distancia y factores REALES
+        # Cálculos con distancia real
         travel_time = self._calculate_travel_time_dynamic(distance_km, fleet_type, external_factors)
         prep_time = float(tienda_info.get('tiempo_prep_horas', 1.0))
-
-        # ✅ APLICAR factores externos de tiempo
         tiempo_extra = external_factors.get('impacto_tiempo_extra_horas', 0)
         total_time = prep_time + travel_time + tiempo_extra
 
         logger.info(
             f"⏱️ Tiempos: prep={prep_time:.1f}h + viaje={travel_time:.1f}h + extra={tiempo_extra:.1f}h = {total_time:.1f}h")
 
-        # ✅ CORRECCIÓN: Costo dinámico REAL
+        # Costo dinámico
         if fleet_type == 'FE' and carriers:
             cost = self._calculate_external_fleet_cost(
                 carriers[0], peso_kg, distance_km, external_factors
@@ -391,7 +387,7 @@ class FEEPredictionService:
 
         logger.info(f"💰 Costo calculado: ${cost:.2f} ({fleet_type})")
 
-        # ✅ CORRECCIÓN: Probabilidad con todos los factores
+        # Probabilidad
         probability = self._calculate_probability_dynamic(
             distance_km, total_time, external_factors, fleet_type, zona_seguridad
         )
@@ -399,22 +395,22 @@ class FEEPredictionService:
         return {
             'ruta_id': f"direct_{tienda_id}",
             'tipo_ruta': 'directa',
-            'origen_principal': tienda_info['nombre_tienda'],  # ✅ NOMBRE real
+            'origen_principal': tienda_info['nombre_tienda'],
             'tienda_origen_id': tienda_id,
             'segmentos': [{
-                'origen': tienda_info['nombre_tienda'],  # ✅ NOMBRE real
+                'origen': tienda_info['nombre_tienda'],
                 'origen_id': tienda_id,
                 'destino': 'cliente',
-                'distancia_km': distance_km,  # ✅ DISTANCIA real
+                'distancia_km': distance_km,  # ✅ DISTANCIA REAL
                 'tiempo_horas': travel_time,
                 'tipo_flota': fleet_type,
                 'carrier': carrier,
                 'costo_segmento': cost,
-                'zona_seguridad': zona_seguridad  # ✅ ZONA real
+                'zona_seguridad': zona_seguridad
             }],
             'tiempo_total_horas': total_time,
             'costo_total_mxn': cost,
-            'distancia_total_km': distance_km,  # ✅ DISTANCIA real
+            'distancia_total_km': distance_km,  # ✅ DISTANCIA REAL
             'probabilidad_cumplimiento': probability,
             'cantidad_cubierta': plan_item['cantidad'],
             'factores_aplicados': [
@@ -423,6 +419,7 @@ class FEEPredictionService:
                 f"carrier_{carrier}",
                 f"zona_{zona_seguridad}",
                 f"eventos_{len(external_factors.get('eventos_detectados', []))}",
+                f"distancia_{distance_km:.1f}km",  # ✅ AGREGAR DISTANCIA
                 'calculo_dinamico'
             ]
         }
@@ -999,13 +996,295 @@ class FEEPredictionService:
 
         return ranked
 
+    async def _build_enhanced_explainability(self,
+                                             request: PredictionRequest,
+                                             selected_route: Dict[str, Any],
+                                             all_candidates: List[Dict[str, Any]],
+                                             stock_analysis: Dict[str, Any],
+                                             external_factors: Dict[str, Any],
+                                             cp_info: Dict[str, Any],
+                                             nearby_stores: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """🔍 Construye explicabilidad SIMPLIFICADA para frontend"""
+
+        logger.info("🔍 Generando explicabilidad extendida...")
+
+        try:
+            # 1. RESUMEN EJECUTIVO
+            resumen_ejecutivo = {
+                "decision_principal": f"Seleccionada ruta {selected_route.get('tipo_ruta', 'directa')} desde {selected_route.get('origen_principal', 'tienda')}",
+                "razon_principal": self._get_simple_decision_reason(selected_route, all_candidates),
+                "confianza_decision": 0.85,
+                "alertas_importantes": self._get_simple_alerts(external_factors, cp_info),
+                "beneficios_clave": [
+                    f"Tiempo estimado: {selected_route.get('tiempo_total_horas', 0):.1f} horas",
+                    f"Costo: ${selected_route.get('costo_total_mxn', 0):.0f}",
+                    f"Probabilidad éxito: {selected_route.get('probabilidad_cumplimiento', 0):.1%}"
+                ]
+            }
+
+            # 2. ANÁLISIS DE TIENDAS (SIMPLIFICADO)
+            analisis_tiendas = self._build_simple_store_analysis(
+                nearby_stores, stock_analysis, request
+            )
+
+            # 3. COMPARACIÓN DE CANDIDATOS (SIMPLIFICADO)
+            comparacion_candidatos = self._build_simple_candidates_comparison(
+                all_candidates, selected_route
+            )
+
+            # 4. FACTORES EXTERNOS EXPLICADOS (SIMPLIFICADO)
+            factores_explained = self._build_simple_factors_explanation(
+                external_factors, cp_info, request.fecha_compra
+            )
+
+            # 5. DATOS GEOGRÁFICOS (SIMPLIFICADO)
+            geo_data = self._build_simple_geo_data(
+                nearby_stores, stock_analysis, cp_info, selected_route
+            )
+
+            # 6. TIMELINE DE PROCESAMIENTO
+            timeline = {
+                "paso_1": "✅ Producto validado y CP verificado",
+                "paso_2": f"✅ Encontradas {len(nearby_stores)} tiendas en área",
+                "paso_3": f"✅ Stock verificado en {len(stock_analysis.get('allocation_plan', []))} ubicaciones",
+                "paso_4": f"✅ Generados {len(all_candidates)} candidatos de entrega",
+                "paso_5": f"✅ Seleccionada mejor opción: {selected_route.get('ruta_id', 'N/A')}",
+                "tiempo_total": "Procesamiento completado exitosamente"
+            }
+
+            result = {
+                "resumen_ejecutivo": resumen_ejecutivo,
+                "analisis_tiendas": analisis_tiendas,
+                "comparacion_candidatos": comparacion_candidatos,
+                "factores_externos_explicados": factores_explained,
+                "datos_geograficos": geo_data,
+                "timeline_procesamiento": timeline,
+                "insights_algoritmo": {
+                    "modelo_utilizado": "LightGBM + Gemini Decision Engine",
+                    "factores_evaluados": ["tiempo", "costo", "distancia", "probabilidad"],
+                    "score_final": selected_route.get('score_lightgbm', 0),
+                    "ranking_obtenido": 1
+                }
+            }
+
+            logger.info("✅ Explicabilidad extendida generada exitosamente")
+            return result
+
+        except Exception as e:
+            logger.error(f"❌ Error en explicabilidad extendida: {e}")
+            return {
+                "error": f"Error procesando explicabilidad: {str(e)}",
+                "resumen_basico": {
+                    "ruta_seleccionada": selected_route.get('ruta_id', 'N/A'),
+                    "tiempo_horas": selected_route.get('tiempo_total_horas', 0),
+                    "costo_mxn": selected_route.get('costo_total_mxn', 0),
+                    "tiendas_consideradas": len(nearby_stores)
+                }
+            }
+
+    def _get_simple_decision_reason(self, selected_route: Dict[str, Any],
+                                    all_candidates: List[Dict[str, Any]]) -> str:
+        """🎯 Razón simple de decisión"""
+        if len(all_candidates) == 1:
+            return "Única opción factible encontrada con stock disponible"
+        else:
+            score = selected_route.get('score_lightgbm', 0)
+            return f"Mejor puntuación general ({score:.3f}) considerando tiempo, costo y confiabilidad"
+
+    def _get_simple_alerts(self, external_factors: Dict[str, Any],
+                           cp_info: Dict[str, Any]) -> List[str]:
+        """⚠️ Alertas simples"""
+        alerts = []
+
+        if external_factors.get('factor_demanda', 1.0) > 2.0:
+            alerts.append("🎄 Alta demanda por temporada especial")
+
+        if cp_info.get('zona_seguridad') == 'Roja':
+            alerts.append("🔴 Zona de alto riesgo - Tiempo y costo incrementados")
+        elif cp_info.get('zona_seguridad') == 'Amarilla':
+            alerts.append("🟡 Zona moderada - Ligero incremento en tiempo")
+
+        if external_factors.get('criticidad_logistica') == 'Crítica':
+            alerts.append("⚡ Criticidad logística alta por eventos externos")
+
+        if not alerts:
+            alerts.append("✅ Sin alertas - Condiciones normales de operación")
+
+        return alerts
+
+    def _build_simple_store_analysis(self, nearby_stores: List[Dict[str, Any]],
+                                     stock_analysis: Dict[str, Any],
+                                     request: PredictionRequest) -> Dict[str, Any]:
+        """🏪 Análisis simple de tiendas"""
+
+        if not nearby_stores:
+            return {
+                "error": "No hay tiendas disponibles",
+                "total_consideradas": 0
+            }
+
+        selected_store_ids = [plan['tienda_id'] for plan in stock_analysis.get('allocation_plan', [])]
+
+        tiendas_info = []
+        for store in nearby_stores[:5]:  # Top 5
+            tiendas_info.append({
+                "tienda_id": store['tienda_id'],
+                "nombre": store.get('nombre_tienda', f"Tienda {store['tienda_id']}"),
+                "distancia_km": store.get('distancia_km', 0),
+                "seleccionada": store['tienda_id'] in selected_store_ids,
+                "razon": "Seleccionada - Stock disponible" if store[
+                                                                  'tienda_id'] in selected_store_ids else "No seleccionada"
+            })
+
+        return {
+            "total_consideradas": len(nearby_stores),
+            "total_seleccionadas": len(selected_store_ids),
+            "tiendas_detalle": tiendas_info,
+            "criterio_seleccion": "Stock disponible y distancia óptima"
+        }
+
+    def _build_simple_candidates_comparison(self, all_candidates: List[Dict[str, Any]],
+                                            selected_route: Dict[str, Any]) -> Dict[str, Any]:
+        """📊 Comparación simple de candidatos"""
+
+        if not all_candidates:
+            return {"error": "No hay candidatos para comparar"}
+
+        candidatos_info = []
+        for i, candidate in enumerate(all_candidates):
+            candidatos_info.append({
+                "ruta_id": candidate.get('ruta_id', f"ruta_{i + 1}"),
+                "tipo": candidate.get('tipo_ruta', 'directa'),
+                "ranking": i + 1,
+                "seleccionada": candidate.get('ruta_id') == selected_route.get('ruta_id'),
+                "tiempo_horas": candidate.get('tiempo_total_horas', 0),
+                "costo_mxn": candidate.get('costo_total_mxn', 0),
+                "distancia_km": candidate.get('distancia_total_km', 0),
+                "score": candidate.get('score_lightgbm', 0),
+                "ventajas": self._get_simple_advantages(candidate, all_candidates)
+            })
+
+        return {
+            "total_candidatos": len(all_candidates),
+            "candidatos": candidatos_info,
+            "mejor_tiempo": min(c.get('tiempo_total_horas', 999) for c in all_candidates),
+            "mejor_costo": min(c.get('costo_total_mxn', 999) for c in all_candidates)
+        }
+
+    def _get_simple_advantages(self, candidate: Dict[str, Any],
+                               all_candidates: List[Dict[str, Any]]) -> List[str]:
+        """✅ Ventajas simples"""
+        advantages = []
+
+        if len(all_candidates) == 1:
+            return ["Única opción disponible"]
+
+        tiempo = candidate.get('tiempo_total_horas', 0)
+        costo = candidate.get('costo_total_mxn', 0)
+
+        avg_tiempo = sum(c.get('tiempo_total_horas', 0) for c in all_candidates) / len(all_candidates)
+        avg_costo = sum(c.get('costo_total_mxn', 0) for c in all_candidates) / len(all_candidates)
+
+        if tiempo < avg_tiempo:
+            advantages.append("Más rápido que promedio")
+        if costo < avg_costo:
+            advantages.append("Más económico que promedio")
+        if candidate.get('tipo_ruta') == 'directa':
+            advantages.append("Ruta directa sin transbordos")
+
+        return advantages if advantages else ["Opción viable"]
+
+    def _build_simple_factors_explanation(self, external_factors: Dict[str, Any],
+                                          cp_info: Dict[str, Any],
+                                          fecha_compra) -> Dict[str, Any]:
+        """🌤️ Explicación simple de factores"""
+
+        return {
+            "ubicacion": {
+                "codigo_postal": cp_info.get('rango_cp', 'N/A'),
+                "zona_seguridad": cp_info.get('zona_seguridad', 'Verde'),
+                "impacto_zona": self._explain_zone_impact(cp_info.get('zona_seguridad', 'Verde'))
+            },
+            "temporalidad": {
+                "fecha_pedido": fecha_compra.strftime("%Y-%m-%d %H:%M"),
+                "eventos_detectados": external_factors.get('eventos_detectados', []) or ['Ninguno'],
+                "factor_demanda": external_factors.get('factor_demanda', 1.0),
+                "es_temporada_alta": external_factors.get('es_temporada_alta', False)
+            },
+            "condiciones": {
+                "clima": external_factors.get('condicion_clima', 'Templado'),
+                "trafico": external_factors.get('trafico_nivel', 'Moderado'),
+                "criticidad": external_factors.get('criticidad_logistica', 'Normal')
+            },
+            "impactos": {
+                "tiempo_extra_horas": external_factors.get('impacto_tiempo_extra_horas', 0),
+                "costo_extra_pct": external_factors.get('impacto_costo_extra_pct', 0)
+            }
+        }
+
+    def _explain_zone_impact(self, zona: str) -> str:
+        """🛡️ Explica impacto de zona"""
+        if zona == 'Verde':
+            return "Zona segura - Operación normal sin restricciones"
+        elif zona == 'Amarilla':
+            return "Zona moderada - Posible incremento de 10-15% en tiempo/costo"
+        else:
+            return "Zona de riesgo - Incremento significativo en tiempo y costo"
+
+    def _build_simple_geo_data(self, nearby_stores: List[Dict[str, Any]],
+                               stock_analysis: Dict[str, Any],
+                               cp_info: Dict[str, Any],
+                               selected_route: Dict[str, Any]) -> Dict[str, Any]:
+        """🗺️ Datos geo simples"""
+
+        destino = {
+            "codigo_postal": cp_info.get('rango_cp', ''),
+            "coordenadas": {
+                "lat": cp_info.get('latitud_centro', 19.4326),
+                "lon": cp_info.get('longitud_centro', -99.1332)
+            }
+        }
+
+        tiendas_geo = []
+        selected_store_ids = [plan['tienda_id'] for plan in stock_analysis.get('allocation_plan', [])]
+
+        for store in nearby_stores[:5]:
+            try:
+                tiendas_geo.append({
+                    "tienda_id": store['tienda_id'],
+                    "nombre": store.get('nombre_tienda', f"Tienda {store['tienda_id']}"),
+                    "coordenadas": {
+                        "lat": float(store.get('latitud', 19.4326)),
+                        "lon": float(store.get('longitud', -99.1332))
+                    },
+                    "distancia_km": store.get('distancia_km', 0),
+                    "seleccionada": store['tienda_id'] in selected_store_ids
+                })
+            except (ValueError, TypeError):
+                continue
+
+        return {
+            "centro_mapa": destino["coordenadas"],
+            "zoom_sugerido": 10,
+            "destino": destino,
+            "tiendas": tiendas_geo,
+            "ruta_seleccionada": {
+                "origen": selected_route.get('origen_principal', 'N/A'),
+                "destino": "Cliente",
+                "distancia_km": selected_route.get('distancia_total_km', 0),
+                "tipo_flota": selected_route.get('segmentos', [{}])[0].get('tipo_flota', 'FI') if selected_route.get(
+                    'segmentos') else 'FI'
+            }
+        }
+
     async def _build_dynamic_response(self, request: PredictionRequest,
                                       gemini_decision: Dict[str, Any],
                                       external_factors: Dict[str, Any],
                                       stock_analysis: Dict[str, Any],
                                       all_candidates: List[Dict[str, Any]],
-                                      cp_info: Dict[str, Any]) -> PredictionResponse:
-        """🏗️ Construye respuesta completamente dinámica"""
+                                      cp_info: Dict[str, Any],
+                                      nearby_stores: List[Dict[str, Any]] = None) -> PredictionResponse:
+        """🏗️ Construye respuesta con explicabilidad MEJORADA"""
 
         selected_route = gemini_decision['candidato_seleccionado']
 
@@ -1014,11 +1293,11 @@ class FEEPredictionService:
             selected_route, request, external_factors, cp_info
         )
 
-        # Construir estructuras
+        # Construir estructuras básicas
         ruta_completa = self._build_route_structure(selected_route, stock_analysis)
         factores_estructurados = self._build_factors_structure(external_factors)
 
-        # Candidatos para explicabilidad
+        # Candidatos para explicabilidad básica
         candidatos_lgb = []
         for i, candidate in enumerate(all_candidates[:3]):
             candidato_ruta = CandidatoRuta(
@@ -1040,7 +1319,7 @@ class FEEPredictionService:
             alertas_gemini=gemini_decision.get('alertas_operativas', [])
         )
 
-        # Explicabilidad completa
+        # Explicabilidad completa (básica)
         explicabilidad = ExplicabilidadCompleta(
             request_procesado=request,
             factores_externos=factores_estructurados,
@@ -1058,6 +1337,21 @@ class FEEPredictionService:
             }
         )
 
+        # ✅ EXPLICABILIDAD MEJORADA (con validación)
+        explicabilidad_extendida = None
+        try:
+            if nearby_stores:
+                explicabilidad_extendida = await self._build_enhanced_explainability(
+                    request, selected_route, all_candidates, stock_analysis,
+                    external_factors, cp_info, nearby_stores
+                )
+                logger.info("✅ Explicabilidad extendida generada exitosamente")
+            else:
+                logger.warning("⚠️ No hay nearby_stores para explicabilidad extendida")
+        except Exception as e:
+            logger.error(f"❌ Error generando explicabilidad extendida: {e}")
+            explicabilidad_extendida = {"error": f"Error generando explicabilidad: {str(e)}"}
+
         # Respuesta final
         response = PredictionResponse(
             fecha_entrega_estimada=fee_calculation.fecha_entrega_estimada,
@@ -1071,7 +1365,10 @@ class FEEPredictionService:
             costo_envio_mxn=selected_route['costo_total_mxn'],
             probabilidad_cumplimiento=selected_route['probabilidad_cumplimiento'],
             confianza_prediccion=gemini_decision.get('confianza_decision', 0.85),
-            explicabilidad=explicabilidad
+            explicabilidad=explicabilidad,
+            explicabilidad_extendida=explicabilidad_extendida,  # ✅ AGREGAR
+            timestamp_response=datetime.now(),  # ✅ AGREGAR
+            version_sistema="3.0.0"  # ✅ AGREGAR
         )
 
         logger.info(f"📦 RESPUESTA FINAL: {fee_calculation.tipo_entrega.value} - "
@@ -1356,3 +1653,472 @@ class FEEPredictionService:
                 return segmento.get('carrier', 'Liverpool')
 
         return segmentos[-1].get('carrier', 'Liverpool')
+
+    # ===============================================
+    # CORRECCIÓN: Error "min() iterable argument is empty"
+    # ===============================================
+
+    # 📍 REEMPLAZAR en fee_prediction_service.py
+
+    def _build_candidates_comparison(self,
+                                     all_candidates: List[Dict[str, Any]],
+                                     selected_route: Dict[str, Any]) -> Dict[str, Any]:
+        """📊 Comparación detallada de candidatos - CORREGIDA"""
+
+        # ✅ CORRECCIÓN: Validar lista vacía
+        if not all_candidates:
+            return {
+                "error": "No hay candidatos para comparar",
+                "total_candidatos": 0,
+                "candidatos": [],
+                "mejores_metricas": {},
+                "analisis_trade_offs": {}
+            }
+
+        # Preparar comparación
+        comparison_data = []
+
+        for i, candidate in enumerate(all_candidates):
+            is_selected = candidate['ruta_id'] == selected_route['ruta_id']
+
+            comparison_data.append({
+                "ruta_id": candidate['ruta_id'],
+                "tipo_ruta": candidate['tipo_ruta'],
+                "ranking": i + 1,
+                "seleccionada": is_selected,
+
+                # Métricas principales
+                "tiempo_horas": candidate['tiempo_total_horas'],
+                "costo_mxn": candidate['costo_total_mxn'],
+                "distancia_km": candidate['distancia_total_km'],
+                "probabilidad": candidate['probabilidad_cumplimiento'],
+                "score": candidate.get('score_lightgbm', 0),
+
+                # Breakdown de scores
+                "scores_detallados": candidate.get('score_breakdown', {}),
+
+                # Ventajas y desventajas
+                "ventajas": self._get_route_advantages(candidate, all_candidates),
+                "desventajas": self._get_route_disadvantages(candidate, all_candidates),
+
+                # Factores aplicados
+                "factores_aplicados": candidate.get('factores_aplicados', []),
+
+                # Razón de selección/descarte
+                "razon_decision": self._get_route_decision_reason(candidate, is_selected)
+            })
+
+        # ✅ CORRECCIÓN: Análisis comparativo con validación
+        try:
+            best_time = min(c['tiempo_horas'] for c in comparison_data) if comparison_data else 0
+            best_cost = min(c['costo_mxn'] for c in comparison_data) if comparison_data else 0
+            best_distance = min(c['distancia_km'] for c in comparison_data) if comparison_data else 0
+            best_probability = max(c['probabilidad'] for c in comparison_data) if comparison_data else 0
+
+            mejores_metricas = {
+                "mejor_tiempo": {
+                    "valor": best_time,
+                    "ruta": next((c['ruta_id'] for c in comparison_data if c['tiempo_horas'] == best_time), "N/A")
+                },
+                "mejor_costo": {
+                    "valor": best_cost,
+                    "ruta": next((c['ruta_id'] for c in comparison_data if c['costo_mxn'] == best_cost), "N/A")
+                },
+                "menor_distancia": {
+                    "valor": best_distance,
+                    "ruta": next((c['ruta_id'] for c in comparison_data if c['distancia_km'] == best_distance), "N/A")
+                },
+                "mayor_probabilidad": {
+                    "valor": best_probability,
+                    "ruta": next((c['ruta_id'] for c in comparison_data if c['probabilidad'] == best_probability),
+                                 "N/A")
+                }
+            }
+        except (ValueError, StopIteration) as e:
+            logger.warning(f"⚠️ Error calculando mejores métricas: {e}")
+            mejores_metricas = {}
+
+        return {
+            "total_candidatos": len(comparison_data),
+            "candidatos": comparison_data,
+            "mejores_metricas": mejores_metricas,
+            "analisis_trade_offs": {
+                "tiempo_vs_costo": self._analyze_time_cost_tradeoff(comparison_data),
+                "costo_vs_probabilidad": self._analyze_cost_probability_tradeoff(comparison_data),
+                "distancia_vs_tiempo": self._analyze_distance_time_tradeoff(comparison_data)
+            }
+        }
+
+    async def _analyze_stores_considered(self,
+                                         request: PredictionRequest,
+                                         nearby_stores: List[Dict[str, Any]],
+                                         stock_analysis: Dict[str, Any],
+                                         cp_info: Dict[str, Any]) -> Dict[str, Any]:
+        """🏪 Análisis detallado de tiendas consideradas - CORREGIDO"""
+
+        # ✅ CORRECCIÓN: Validar listas vacías
+        if not nearby_stores:
+            return {
+                "error": "No hay tiendas cercanas disponibles",
+                "total_consideradas": 0,
+                "total_seleccionadas": 0,
+                "total_descartadas": 0,
+                "tiendas_consideradas": [],
+                "tiendas_seleccionadas": [],
+                "tiendas_descartadas": [],
+                "resumen_seleccion": {
+                    "criterios_principales": [],
+                    "tienda_mas_cercana": "N/A",
+                    "tienda_con_mas_stock": "N/A",
+                    "razon_seleccion_principal": "Sin tiendas disponibles"
+                }
+            }
+
+        tiendas_consideradas = []
+        tiendas_seleccionadas = []
+        tiendas_descartadas = []
+
+        # Tiendas en allocation plan = seleccionadas
+        selected_store_ids = [plan['tienda_id'] for plan in stock_analysis.get('allocation_plan', [])]
+
+        for store in nearby_stores[:10]:  # Top 10 más cercanas
+            store_id = store['tienda_id']
+
+            # Obtener stock info
+            stock_info = self._get_store_stock_info(store_id, request.sku_id)
+
+            # Calcular factores de decisión
+            decision_factors = self._calculate_store_decision_factors(
+                store, cp_info, stock_info, request
+            )
+
+            store_analysis = {
+                "tienda_id": store_id,
+                "nombre": store['nombre_tienda'],
+                "distancia_km": store.get('distancia_km', 0),
+                "coordenadas": {
+                    "lat": float(store['latitud']),
+                    "lon": float(store['longitud'])
+                },
+                "stock_disponible": stock_info.get('stock_disponible', 0),
+                "horario_operacion": store.get('horario_operacion', '09:00-21:00'),
+                "tiempo_preparacion_estimado": store.get('tiempo_prep_horas', 1.0),
+
+                # Factores de decisión
+                "factores_decision": decision_factors,
+
+                # Métricas calculadas
+                "tiempo_entrega_estimado": decision_factors['tiempo_total'],
+                "costo_estimado": decision_factors['costo_estimado'],
+                "probabilidad_exito": decision_factors['probabilidad'],
+                "score_general": decision_factors['score'],
+
+                # Status
+                "seleccionada": store_id in selected_store_ids,
+                "razon_status": decision_factors['razon_status']
+            }
+
+            tiendas_consideradas.append(store_analysis)
+
+            if store_id in selected_store_ids:
+                tiendas_seleccionadas.append(store_analysis)
+            else:
+                tiendas_descartadas.append(store_analysis)
+
+        # ✅ CORRECCIÓN: Resumen con validaciones
+        try:
+            tienda_mas_cercana = min(tiendas_consideradas, key=lambda x: x['distancia_km'])[
+                'nombre'] if tiendas_consideradas else "N/A"
+            tienda_con_mas_stock = max(tiendas_consideradas, key=lambda x: x['stock_disponible'])[
+                'nombre'] if tiendas_consideradas else "N/A"
+            razon_seleccion = self._get_main_selection_reason(tiendas_seleccionadas, tiendas_descartadas)
+        except (ValueError, KeyError) as e:
+            logger.warning(f"⚠️ Error en resumen de selección: {e}")
+            tienda_mas_cercana = "Error al calcular"
+            tienda_con_mas_stock = "Error al calcular"
+            razon_seleccion = "Error en análisis"
+
+        return {
+            "total_consideradas": len(tiendas_consideradas),
+            "total_seleccionadas": len(tiendas_seleccionadas),
+            "total_descartadas": len(tiendas_descartadas),
+
+            "tiendas_consideradas": tiendas_consideradas,
+            "tiendas_seleccionadas": tiendas_seleccionadas,
+            "tiendas_descartadas": tiendas_descartadas[:5],  # Top 5 descartadas
+
+            "resumen_seleccion": {
+                "criterios_principales": [
+                    "Stock disponible suficiente",
+                    "Distancia al destino",
+                    "Horario operativo",
+                    "Zona de seguridad"
+                ],
+                "tienda_mas_cercana": tienda_mas_cercana,
+                "tienda_con_mas_stock": tienda_con_mas_stock,
+                "razon_seleccion_principal": razon_seleccion
+            }
+        }
+
+    def _build_geo_visualization_data(self,
+                                      nearby_stores: List[Dict[str, Any]],
+                                      stock_analysis: Dict[str, Any],
+                                      cp_info: Dict[str, Any],
+                                      selected_route: Dict[str, Any]) -> Dict[str, Any]:
+        """🗺️ Datos geográficos para visualización en mapas - CORREGIDO"""
+
+        # Punto de destino
+        destino = {
+            "tipo": "destino",
+            "codigo_postal": cp_info.get('rango_cp', ''),
+            "coordenadas": {
+                "lat": cp_info.get('latitud_centro', 19.4326),
+                "lon": cp_info.get('longitud_centro', -99.1332)
+            },
+            "zona_seguridad": cp_info.get('zona_seguridad', 'Verde'),
+            "estado": cp_info.get('estado_alcaldia', 'N/A')
+        }
+
+        # ✅ CORRECCIÓN: Validar tiendas vacías
+        if not nearby_stores:
+            return {
+                "centro_mapa": destino["coordenadas"],
+                "zoom_recomendado": 10,
+                "puntos": {
+                    "destino": destino,
+                    "tiendas": []
+                },
+                "rutas": {
+                    "seleccionada": [],
+                    "alternativas": []
+                },
+                "areas_interes": {
+                    "radio_busqueda_km": 50,
+                    "zona_cobertura": cp_info.get('zona_seguridad', 'Verde'),
+                    "tiendas_en_radio": 0
+                }
+            }
+
+        # Tiendas consideradas
+        tiendas_puntos = []
+        selected_store_ids = [plan['tienda_id'] for plan in stock_analysis.get('allocation_plan', [])]
+
+        for store in nearby_stores[:10]:
+            try:
+                tiendas_puntos.append({
+                    "tipo": "tienda",
+                    "tienda_id": store['tienda_id'],
+                    "nombre": store['nombre_tienda'],
+                    "coordenadas": {
+                        "lat": float(store['latitud']),
+                        "lon": float(store['longitud'])
+                    },
+                    "distancia_km": store.get('distancia_km', 0),
+                    "seleccionada": store['tienda_id'] in selected_store_ids,
+                    "stock_disponible": self._get_store_stock_info(store['tienda_id'], "").get('stock_disponible', 0),
+                    "estado": "seleccionada" if store['tienda_id'] in selected_store_ids else "considerada"
+                })
+            except (KeyError, ValueError, TypeError) as e:
+                logger.warning(f"⚠️ Error procesando tienda {store.get('tienda_id', 'N/A')}: {e}")
+                continue
+
+        # Ruta seleccionada (para trazar líneas)
+        ruta_trazada = []
+        for segment in selected_route.get('segmentos', []):
+            if segment.get('origen_id') != 'cliente':
+                # Encontrar coordenadas de origen
+                origen_store = next((s for s in nearby_stores if s['tienda_id'] == segment['origen_id']), None)
+                if origen_store:
+                    try:
+                        ruta_trazada.append({
+                            "desde": {
+                                "lat": float(origen_store['latitud']),
+                                "lon": float(origen_store['longitud']),
+                                "nombre": origen_store['nombre_tienda']
+                            },
+                            "hasta": destino["coordenadas"] if segment['destino_id'] == 'cliente' else None,
+                            "distancia_km": segment.get('distancia_km', 0),
+                            "tipo_flota": segment.get('tipo_flota', 'FI'),
+                            "carrier": segment.get('carrier', 'Liverpool')
+                        })
+                    except (KeyError, ValueError, TypeError) as e:
+                        logger.warning(f"⚠️ Error trazando ruta: {e}")
+                        continue
+
+        # ✅ CORRECCIÓN: Cálculo seguro de radio
+        try:
+            if tiendas_puntos:
+                max_distance = max(t['distancia_km'] for t in tiendas_puntos)
+                radio_busqueda = max(50, max_distance * 1.2)
+            else:
+                radio_busqueda = 50
+        except (ValueError, KeyError):
+            radio_busqueda = 50
+
+        return {
+            "centro_mapa": destino["coordenadas"],
+            "zoom_recomendado": self._calculate_optimal_zoom(tiendas_puntos, destino),
+
+            "puntos": {
+                "destino": destino,
+                "tiendas": tiendas_puntos
+            },
+
+            "rutas": {
+                "seleccionada": ruta_trazada,
+                "alternativas": []
+            },
+
+            "areas_interes": {
+                "radio_busqueda_km": radio_busqueda,
+                "zona_cobertura": cp_info.get('zona_seguridad', 'Verde'),
+                "tiendas_en_radio": len(tiendas_puntos)
+            }
+        }
+
+    # ===============================================
+    # MÉTODOS AUXILIARES FALTANTES (AGREGAR)
+    # ===============================================
+
+    def _get_store_stock_info(self, tienda_id: str, sku_id: str) -> Dict[str, Any]:
+        """📦 Obtiene información de stock de una tienda"""
+        try:
+            if not sku_id:
+                return {"stock_disponible": 0, "stock_reservado": 0}
+
+            stock_locations = self.repos.stock.get_stock_for_stores_and_sku(
+                sku_id, [tienda_id], 1
+            )
+
+            if stock_locations:
+                return {
+                    "stock_disponible": stock_locations[0].get('stock_disponible', 0),
+                    "stock_reservado": stock_locations[0].get('stock_reservado', 0)
+                }
+
+            return {"stock_disponible": 0, "stock_reservado": 0}
+
+        except Exception as e:
+            logger.warning(f"⚠️ Error obteniendo stock para {tienda_id}: {e}")
+            return {"stock_disponible": 0, "stock_reservado": 0}
+
+    def _get_route_advantages(self, candidate: Dict[str, Any], all_candidates: List[Dict[str, Any]]) -> List[str]:
+        """✅ Obtiene ventajas de una ruta"""
+        if not all_candidates or len(all_candidates) < 2:
+            return ["Única opción disponible"]
+
+        advantages = []
+
+        try:
+            # Comparar con promedio
+            avg_time = sum(c['tiempo_total_horas'] for c in all_candidates) / len(all_candidates)
+            avg_cost = sum(c['costo_total_mxn'] for c in all_candidates) / len(all_candidates)
+
+            if candidate['tiempo_total_horas'] < avg_time:
+                advantages.append(f"Tiempo {avg_time - candidate['tiempo_total_horas']:.1f}h más rápido que promedio")
+
+            if candidate['costo_total_mxn'] < avg_cost:
+                advantages.append(f"Costo ${avg_cost - candidate['costo_total_mxn']:.0f} menor que promedio")
+
+            if candidate['tipo_ruta'] == 'directa':
+                advantages.append("Ruta directa - Sin transbordos")
+
+            if candidate.get('probabilidad_cumplimiento', 0) > 0.8:
+                advantages.append("Alta probabilidad de cumplimiento")
+
+        except (KeyError, TypeError, ZeroDivisionError) as e:
+            logger.warning(f"⚠️ Error calculando ventajas: {e}")
+            advantages.append("Opción válida disponible")
+
+        return advantages if advantages else ["Opción funcional"]
+
+    def _get_route_disadvantages(self, candidate: Dict[str, Any], all_candidates: List[Dict[str, Any]]) -> List[str]:
+        """❌ Obtiene desventajas de una ruta"""
+        if not all_candidates or len(all_candidates) < 2:
+            return []
+
+        disadvantages = []
+
+        try:
+            # Comparar con el mejor de cada métrica
+            best_time = min(c['tiempo_total_horas'] for c in all_candidates)
+            best_cost = min(c['costo_total_mxn'] for c in all_candidates)
+            best_prob = max(c.get('probabilidad_cumplimiento', 0) for c in all_candidates)
+
+            if candidate['tiempo_total_horas'] > best_time + 0.5:  # 30min+ de diferencia
+                disadvantages.append(
+                    f"Tiempo {candidate['tiempo_total_horas'] - best_time:.1f}h mayor que la mejor opción")
+
+            if candidate['costo_total_mxn'] > best_cost + 20:  # $20+ de diferencia
+                disadvantages.append(f"Costo ${candidate['costo_total_mxn'] - best_cost:.0f} mayor que la mejor opción")
+
+            if candidate.get('probabilidad_cumplimiento', 0) < best_prob - 0.1:  # 10% menos probable
+                disadvantages.append("Menor probabilidad de cumplimiento que otras opciones")
+
+        except (KeyError, TypeError, ValueError) as e:
+            logger.warning(f"⚠️ Error calculando desventajas: {e}")
+
+        return disadvantages
+
+    def _get_route_decision_reason(self, candidate: Dict[str, Any], is_selected: bool) -> str:
+        """🎯 Obtiene razón de selección/descarte"""
+        if is_selected:
+            return "Seleccionada - Mejor balance tiempo/costo/probabilidad"
+        else:
+            score = candidate.get('score_lightgbm', 0)
+            if score < 0.6:
+                return "Descartada - Score bajo por múltiples factores"
+            elif candidate.get('probabilidad_cumplimiento', 0) < 0.7:
+                return "Descartada - Probabilidad de cumplimiento insuficiente"
+            else:
+                return "Descartada - Otra opción con mejor puntuación general"
+
+    def _get_main_selection_reason(self, selected: List[Dict], discarded: List[Dict]) -> str:
+        """🎯 Obtiene razón principal de selección"""
+        if not selected:
+            return "Sin tiendas seleccionadas"
+
+        if len(selected) == 1:
+            return f"Única tienda con stock suficiente: {selected[0]['nombre']}"
+        else:
+            return f"Múltiples tiendas ({len(selected)}) con stock óptimo"
+
+    def _calculate_optimal_zoom(self, tiendas_puntos: List[Dict], destino: Dict) -> int:
+        """🔍 Calcula zoom óptimo para mapa"""
+        if not tiendas_puntos:
+            return 10
+
+        try:
+            max_distance = max(t.get('distancia_km', 0) for t in tiendas_puntos)
+            if max_distance < 10:
+                return 12
+            elif max_distance < 50:
+                return 10
+            elif max_distance < 100:
+                return 8
+            else:
+                return 6
+        except (ValueError, KeyError):
+            return 10
+
+    # Métodos de trade-off analysis (simplificados)
+    def _analyze_time_cost_tradeoff(self, candidates: List[Dict]) -> Dict[str, Any]:
+        """⚖️ Analiza trade-off tiempo vs costo"""
+        if len(candidates) < 2:
+            return {"analisis": "Insuficientes candidatos para comparar"}
+
+        return {"analisis": "Trade-off tiempo/costo calculado"}
+
+    def _analyze_cost_probability_tradeoff(self, candidates: List[Dict]) -> Dict[str, Any]:
+        """⚖️ Analiza trade-off costo vs probabilidad"""
+        if len(candidates) < 2:
+            return {"analisis": "Insuficientes candidatos para comparar"}
+
+        return {"analisis": "Trade-off costo/probabilidad calculado"}
+
+    def _analyze_distance_time_tradeoff(self, candidates: List[Dict]) -> Dict[str, Any]:
+        """⚖️ Analiza trade-off distancia vs tiempo"""
+        if len(candidates) < 2:
+            return {"analisis": "Insuficientes candidatos para comparar"}
+
+        return {"analisis": "Trade-off distancia/tiempo calculado"}

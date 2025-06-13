@@ -9,7 +9,12 @@ from controllers.fee_controller import router as fee_router
 from utils.logger import setup_logging, logger
 
 setup_logging()
+"""
+@Autor: Iván Martínez Trejo
+@Contacto: imartinezt@liverpool.com.mx
+-- Descripcción Modelo de Logistica [ FEE ]
 
+"""
 app = FastAPI(
     title=f"🎯 {settings.APP_NAME}",
     version=settings.VERSION,
@@ -18,7 +23,7 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
-# CORS Middleware
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
