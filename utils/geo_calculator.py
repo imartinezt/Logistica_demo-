@@ -1,6 +1,6 @@
+# geo_calculator.py - VERSIÓN CORREGIDA
 import math
-from typing import Tuple, List, Dict, Any
-
+from typing import Tuple, Optional
 from geopy.distance import geodesic, great_circle
 from pyproj import Transformer
 
@@ -9,9 +9,10 @@ from utils.logger import logger
 
 
 class GeoCalculator:
-    """Calculador geoespacial """
+    """Calculador geoespacial CORREGIDO con validaciones estrictas"""
 
     _transformer_mexico = None
+    _coordinate_cache = {}  # Cache para coordenadas validadas
 
     @staticmethod
     def _get_transformer():
@@ -24,97 +25,152 @@ class GeoCalculator:
         return GeoCalculator._transformer_mexico
 
     @staticmethod
-    def calculate_route_efficiency(distance_km: float,
-                                   tiempo_estimado_horas: float,
-                                   costo_mxn: float) -> Dict[str, Any]:
-        """Calcula métricas de eficiencia de ruta"""
+    def fix_corrupted_coordinates(lat: float, lon: float) -> Tuple[float, float]:
+        """🔧 CORRECCIÓN: Arregla coordenadas corruptas detectadas en CSV"""
+        try:
+            # Detectar coordenadas con decimales desplazados
+            # Ejemplo: 194.326 → 19.4326, 991.332 → -99.1332
 
-        if tiempo_estimado_horas <= 0 or distance_km <= 0 or costo_mxn <= 0:
-            return {
-                "velocidad_promedio_kmh": 0,
-                "costo_por_km": float('inf') if distance_km <= 0 else costo_mxn / max(0.1, distance_km),
-                "costo_por_hora": float('inf') if tiempo_estimado_horas <= 0 else costo_mxn / max(0.1,
-                                                                                                  tiempo_estimado_horas),
-                "efficiency_score": 0,
-                "clasificacion": "Deficiente"
-            }
+            # Corregir latitud
+            if lat > 90:
+                # Caso: 194.326 → 19.4326
+                lat_str = str(abs(lat))
+                if len(lat_str) >= 6:  # Ej: "194.326"
+                    lat_fixed = float(lat_str[:2] + '.' + lat_str[2:].replace('.', ''))
+                else:
+                    lat_fixed = lat / 10  # Fallback simple
+            elif lat < -90:
+                lat_str = str(abs(lat))
+                if len(lat_str) >= 6:
+                    lat_fixed = -float(lat_str[:2] + '.' + lat_str[2:].replace('.', ''))
+                else:
+                    lat_fixed = lat / 10
+            else:
+                lat_fixed = lat
 
-        velocidad_promedio = distance_km / tiempo_estimado_horas
-        costo_por_km = costo_mxn / distance_km
-        costo_por_hora = costo_mxn / tiempo_estimado_horas
-        efficiency_score = min(1.0, (velocidad_promedio / 40) * (1 / max(1, costo_por_km / 12)))
+            # Corregir longitud
+            if lon > 180:
+                # Caso: 991.332 → -99.1332 (México es negativo)
+                lon_str = str(abs(lon))
+                if len(lon_str) >= 6:  # Ej: "991.332"
+                    lon_fixed = -float(lon_str[:2] + '.' + lon_str[2:].replace('.', ''))
+                else:
+                    lon_fixed = -lon / 10
+            elif lon < -180:
+                lon_str = str(abs(lon))
+                if len(lon_str) >= 6:
+                    lon_fixed = -float(lon_str[:2] + '.' + lon_str[2:].replace('.', ''))
+                else:
+                    lon_fixed = lon / 10
+            elif lon > 0:  # México debería ser negativo
+                lon_fixed = -lon if lon < 180 else -lon / 10
+            else:
+                lon_fixed = lon
 
-        return {
-            "velocidad_promedio_kmh": round(velocidad_promedio, 2),
-            "costo_por_km": round(costo_por_km, 2),
-            "costo_por_hora": round(costo_por_hora, 2),
-            "efficiency_score": round(efficiency_score, 3),
-            "clasificacion": (
-                "Excelente" if efficiency_score >= 0.8 else
-                "Buena" if efficiency_score >= 0.6 else
-                "Regular" if efficiency_score >= 0.4 else
-                "Deficiente"
-            )
-        }
+            # Validar rangos para México
+            if not (14.0 <= lat_fixed <= 33.0):
+                logger.warning(f"⚠️ Latitud fuera de rango México: {lat_fixed}")
+                # Fallback a coordenadas del centro de México
+                lat_fixed = 19.4326  # CDMX como fallback
+
+            if not (-118.0 <= lon_fixed <= -86.0):
+                logger.warning(f"⚠️ Longitud fuera de rango México: {lon_fixed}")
+                lon_fixed = -99.1332  # CDMX como fallback
+
+            if lat != lat_fixed or lon != lon_fixed:
+                logger.info(f"🔧 Coordenadas corregidas: ({lat}, {lon}) → ({lat_fixed}, {lon_fixed})")
+
+            return round(lat_fixed, 4), round(lon_fixed, 4)
+
+        except Exception as e:
+            logger.error(f"❌ Error corrigiendo coordenadas ({lat}, {lon}): {e}")
+            return 19.4326, -99.1332  # CDMX como fallback seguro
 
     @staticmethod
     def calculate_distance_km(lat1: float, lon1: float,
                               lat2: float, lon2: float,
                               method: str = 'geodesic') -> float:
-        """Calcula distancia real entre coordenadas """
+        """🎯 Calcula distancia real CORREGIDA entre coordenadas"""
 
-        if not GeoCalculator._validate_coordinates(lat1, lon1, lat2, lon2):
-            logger.warning(f"⚠️ Coordenadas inválidas: ({lat1},{lon1}) -> ({lat2},{lon2})")
+        # PASO 1: Corregir coordenadas corruptas
+        lat1_fixed, lon1_fixed = GeoCalculator.fix_corrupted_coordinates(lat1, lon1)
+        lat2_fixed, lon2_fixed = GeoCalculator.fix_corrupted_coordinates(lat2, lon2)
+
+        # PASO 2: Validar coordenadas finales
+        if not GeoCalculator._validate_coordinates(lat1_fixed, lon1_fixed, lat2_fixed, lon2_fixed):
+            logger.warning(f"⚠️ Coordenadas inválidas después de corrección")
             return 0.0
 
+        # PASO 3: Cache para evitar recálculos
+        cache_key = f"{lat1_fixed},{lon1_fixed},{lat2_fixed},{lon2_fixed},{method}"
+        if cache_key in GeoCalculator._coordinate_cache:
+            return GeoCalculator._coordinate_cache[cache_key]
+
         try:
+            # PASO 4: Calcular distancia con método seleccionado
             if method == 'geodesic':
-                # Método más preciso usando geodesic
-                distance = geodesic((lat1, lon1), (lat2, lon2)).kilometers
+                distance = geodesic((lat1_fixed, lon1_fixed), (lat2_fixed, lon2_fixed)).kilometers
             elif method == 'great_circle':
-                # Método rápido para distancias largas
-                distance = great_circle((lat1, lon1), (lat2, lon2)).kilometers
+                distance = great_circle((lat1_fixed, lon1_fixed), (lat2_fixed, lon2_fixed)).kilometers
             elif method == 'pyproj':
-                # Método ultra-preciso usando proyección mexicana
-                distance = GeoCalculator._calculate_pyproj_distance(lat1, lon1, lat2, lon2)
+                distance = GeoCalculator._calculate_pyproj_distance(lat1_fixed, lon1_fixed, lat2_fixed, lon2_fixed)
             else:
-                # Fallback a haversine
-                distance = GeoCalculator._haversine_distance(lat1, lon1, lat2, lon2)
+                distance = GeoCalculator._haversine_distance(lat1_fixed, lon1_fixed, lat2_fixed, lon2_fixed)
 
-            # Validar resultado
-            if distance < 0 or distance > settings.MAX_DISTANCE_KM:
-                logger.warning(f"⚠️ Distancia fuera de rango: {distance}km")
-                return min(distance, settings.MAX_DISTANCE_KM) if distance > 0 else 0.0
+            # PASO 5: Validar resultado
+            if distance < 0:
+                logger.warning(f"⚠️ Distancia negativa: {distance}km")
+                distance = 0.0
+            elif distance > 3000:  # México máximo ~2500km
+                logger.warning(f"⚠️ Distancia muy grande para México: {distance:.1f}km")
+                # Recalcular con método más confiable
+                distance = geodesic((lat1_fixed, lon1_fixed), (lat2_fixed, lon2_fixed)).kilometers
+                if distance > 3000:
+                    logger.error(f"❌ Distancia persistentemente grande: {distance:.1f}km")
+                    distance = min(distance, 2500.0)  # Cap máximo para México
 
-            return round(distance, 2)
+            distance = round(distance, 2)
+
+            # Cache resultado válido
+            if distance > 0:
+                GeoCalculator._coordinate_cache[cache_key] = distance
+
+            return distance
 
         except Exception as e:
             logger.warning(f"❌ Error calculando distancia: {e}")
-            return GeoCalculator._haversine_distance(lat1, lon1, lat2, lon2)
+            # Fallback a haversine
+            fallback_distance = GeoCalculator._haversine_distance(lat1_fixed, lon1_fixed, lat2_fixed, lon2_fixed)
+            return max(0.0, fallback_distance)
 
     @staticmethod
     def _validate_coordinates(lat1: float, lon1: float, lat2: float, lon2: float) -> bool:
-        """✅ Valida que las coordenadas sean válidas para México"""
+        """✅ Validación ESTRICTA de coordenadas para México"""
         try:
-            # Validar rangos generales
-            if not (-90 <= lat1 <= 90 and -180 <= lon1 <= 180):
+            # Rangos específicos para México
+            MEXICO_LAT_MIN, MEXICO_LAT_MAX = 14.5, 32.8  # Más preciso
+            MEXICO_LON_MIN, MEXICO_LON_MAX = -117.4, -86.7  # Más preciso
+
+            # Validar punto 1
+            if not (MEXICO_LAT_MIN <= lat1 <= MEXICO_LAT_MAX):
+                logger.warning(f"❌ lat1 fuera de México: {lat1}")
                 return False
-            if not (-90 <= lat2 <= 90 and -180 <= lon2 <= 180):
+            if not (MEXICO_LON_MIN <= lon1 <= MEXICO_LON_MAX):
+                logger.warning(f"❌ lon1 fuera de México: {lon1}")
                 return False
 
-            # Validar rangos específicos para México (más permisivo)
-            mexico_lat_range = (12.0, 35.0)  # Más amplio
-            mexico_lon_range = (-120.0, -84.0)  # Más amplio
-
-            if not (mexico_lat_range[0] <= lat1 <= mexico_lat_range[1] and
-                    mexico_lon_range[0] <= lon1 <= mexico_lon_range[1]):
+            # Validar punto 2
+            if not (MEXICO_LAT_MIN <= lat2 <= MEXICO_LAT_MAX):
+                logger.warning(f"❌ lat2 fuera de México: {lat2}")
                 return False
-            if not (mexico_lat_range[0] <= lat2 <= mexico_lat_range[1] and
-                    mexico_lon_range[0] <= lon2 <= mexico_lon_range[1]):
+            if not (MEXICO_LON_MIN <= lon2 <= MEXICO_LON_MAX):
+                logger.warning(f"❌ lon2 fuera de México: {lon2}")
                 return False
 
             return True
-        except (TypeError, ValueError):
+
+        except (TypeError, ValueError) as e:
+            logger.error(f"❌ Error validando coordenadas: {e}")
             return False
 
     @staticmethod
@@ -141,9 +197,9 @@ class GeoCalculator:
     @staticmethod
     def _haversine_distance(lat1: float, lon1: float,
                             lat2: float, lon2: float) -> float:
-        """🌐 Fórmula Haversine como fallback"""
+        """🌐 Fórmula Haversine optimizada"""
         try:
-            R = settings.EARTH_RADIUS_KM
+            R = 6371.0  # Radio de la Tierra en km
 
             lat1_rad = math.radians(lat1)
             lat2_rad = math.radians(lat2)
@@ -156,139 +212,11 @@ class GeoCalculator:
             c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
             distance = R * c
-            return max(0.0, distance)  # Asegurar que no sea negativo
+            return max(0.0, distance)
+
         except Exception as e:
             logger.error(f"❌ Error en Haversine: {e}")
             return 0.0
-
-    @staticmethod
-    def calculate_bearing(lat1: float, lon1: float,
-                          lat2: float, lon2: float) -> float:
-        """🧭 Calcula el bearing (dirección) entre dos puntos"""
-        try:
-            if not GeoCalculator._validate_coordinates(lat1, lon1, lat2, lon2):
-                return 0.0
-
-            lat1_rad = math.radians(lat1)
-            lat2_rad = math.radians(lat2)
-            delta_lon = math.radians(lon2 - lon1)
-
-            y = math.sin(delta_lon) * math.cos(lat2_rad)
-            x = (math.cos(lat1_rad) * math.sin(lat2_rad) -
-                 math.sin(lat1_rad) * math.cos(lat2_rad) * math.cos(delta_lon))
-
-            bearing = math.atan2(y, x)
-            bearing_degrees = math.degrees(bearing)
-
-            # Normalizar a 0-360 grados
-            return (bearing_degrees + 360) % 360
-        except Exception as e:
-            logger.warning(f"❌ Error calculando bearing: {e}")
-            return 0.0
-
-    @staticmethod
-    def find_closest_locations(target_lat: float, target_lon: float,
-                               locations: List[Dict[str, Any]],
-                               max_results: int = 10,
-                               max_distance_km: float = None) -> List[Dict[str, Any]]:
-        """📍 Encuentra las ubicaciones más cercanas usando cálculos optimizados"""
-        if not locations:
-            return []
-
-        max_distance_km = max_distance_km or settings.MAX_DISTANCE_KM
-
-        # Validar coordenadas objetivo
-        if not GeoCalculator._validate_coordinates(target_lat, target_lon, target_lat, target_lon):
-            logger.warning(f"⚠️ Coordenadas objetivo inválidas: ({target_lat}, {target_lon})")
-            return []
-
-        # Calcular distancias para todas las ubicaciones
-        locations_with_distance = []
-
-        for location in locations:
-            try:
-                lat = location.get('latitud', 0)
-                lon = location.get('longitud', 0)
-
-                # Validar coordenadas de la ubicación
-                if not GeoCalculator._validate_coordinates(lat, lon, lat, lon):
-                    continue
-
-                distance = GeoCalculator.calculate_distance_km(
-                    target_lat, target_lon, lat, lon, method='geodesic'
-                )
-
-                if 0 < distance <= max_distance_km:
-                    location_copy = location.copy()
-                    location_copy['distancia_km'] = distance
-                    location_copy['bearing'] = GeoCalculator.calculate_bearing(
-                        target_lat, target_lon, lat, lon
-                    )
-                    locations_with_distance.append(location_copy)
-
-            except Exception as e:
-                logger.warning(f"❌ Error procesando ubicación {location.get('id', 'unknown')}: {e}")
-                continue
-
-        # Ordenar por distancia y limitar resultados
-        locations_with_distance.sort(key=lambda x: x['distancia_km'])
-        result = locations_with_distance[:max_results]
-
-        logger.info(f"📍 Encontradas {len(result)} ubicaciones cercanas")
-        return result
-
-    @staticmethod
-    def calculate_route_geometry(waypoints: List[Tuple[float, float]]) -> Dict[str, Any]:
-        """🗺️ Calcula geometría de ruta con múltiples waypoints"""
-        if len(waypoints) < 2:
-            return {'total_distance': 0, 'segments': [], 'bbox': None}
-
-        segments = []
-        total_distance = 0
-
-        # Calcular segmentos
-        for i in range(len(waypoints) - 1):
-            lat1, lon1 = waypoints[i]
-            lat2, lon2 = waypoints[i + 1]
-
-            # Validar waypoints
-            if not GeoCalculator._validate_coordinates(lat1, lon1, lat2, lon2):
-                logger.warning(f"⚠️ Waypoint inválido en segmento {i}")
-                continue
-
-            distance = GeoCalculator.calculate_distance_km(lat1, lon1, lat2, lon2)
-            bearing = GeoCalculator.calculate_bearing(lat1, lon1, lat2, lon2)
-
-            segments.append({
-                'segment_id': i + 1,
-                'start': {'lat': lat1, 'lon': lon1},
-                'end': {'lat': lat2, 'lon': lon2},
-                'distance_km': distance,
-                'bearing': bearing
-            })
-
-            total_distance += distance
-
-        # Calcular bounding box
-        if waypoints:
-            lats = [wp[0] for wp in waypoints]
-            lons = [wp[1] for wp in waypoints]
-
-            bbox = {
-                'min_lat': min(lats),
-                'max_lat': max(lats),
-                'min_lon': min(lons),
-                'max_lon': max(lons)
-            }
-        else:
-            bbox = None
-
-        return {
-            'total_distance_km': round(total_distance, 2),
-            'segments': segments,
-            'bbox': bbox,
-            'waypoints_count': len(waypoints)
-        }
 
     @staticmethod
     def calculate_travel_time(distance_km: float,
@@ -296,219 +224,115 @@ class GeoCalculator:
                               traffic_level: str = 'Moderado',
                               weather_condition: str = 'Despejado',
                               road_type: str = 'carretera') -> float:
-        """⏱️ Tiempo de viaje CORREGIDO con velocidades realistas"""
+        """⏱️ TIEMPO OPTIMIZADO con velocidades realistas por distancia"""
 
         if distance_km <= 0:
-            return 0.5  # Tiempo mínimo base
+            return 0.3  # Tiempo mínimo absoluto
 
-        # CORRECCIÓN: Velocidades base realistas
-        if transport_type == 'FI':
-            base_speed = 55.0  # 55 km/h promedio para flota interna
-        elif transport_type == 'FE':
-            base_speed = 65.0  # 65 km/h promedio para flota externa
+        # NUEVA LÓGICA: Velocidades dinámicas por distancia
+        if distance_km <= 20:
+            # Urbano/local
+            base_speed = 35.0 if transport_type == 'FI' else 40.0
+            road_type = 'urbano'
+        elif distance_km <= 100:
+            # Suburbano/regional
+            base_speed = 55.0 if transport_type == 'FI' else 65.0
+            road_type = 'suburbano'
+        elif distance_km <= 500:
+            # Carretera nacional
+            base_speed = 70.0 if transport_type == 'FI' else 80.0
+            road_type = 'carretera'
         else:
-            base_speed = 60.0
+            # Larga distancia (requiere múltiples conductores)
+            base_speed = 75.0 if transport_type == 'FI' else 85.0
+            road_type = 'autopista'
 
-        # CORRECCIÓN: Multiplicadores más realistas
+        # Multiplicadores optimizados
         traffic_multipliers = {
-            'Bajo': 1.0,
-            'Moderado': 0.90,  # Reducción menor
-            'Alto': 0.75,  # Más realista
-            'Muy_Alto': 0.60  # Más realista
+            'Bajo': 1.1,
+            'Moderado': 1.0,
+            'Alto': 0.85,
+            'Muy_Alto': 0.70
         }
 
         weather_multipliers = {
             'Despejado': 1.0,
             'Nublado': 0.98,
-            'Lluvioso': 0.85,  # Más realista
-            'Tormenta': 0.70,  # Más realista
+            'Lluvioso': 0.88,
+            'Tormenta': 0.75,
+            'Templado_Seco': 1.0,
             'Templado': 1.0
         }
 
-        # Para distancias largas, asumir carretera
-        if distance_km > 100:
-            road_type = 'carretera'
-
         road_multipliers = {
-            'urbano': 0.60,  # Ciudad es más lenta
-            'suburbano': 0.80,  # Suburbios intermedios
-            'carretera': 1.10,  # Carretera es más rápida
-            'autopista': 1.25  # Autopista más rápida
+            'urbano': 0.8,
+            'suburbano': 0.95,
+            'carretera': 1.0,
+            'autopista': 1.15
         }
 
-        # Calcular velocidad ajustada
-        traffic_factor = traffic_multipliers.get(traffic_level, 0.9)
+        # Calcular velocidad final
+        traffic_factor = traffic_multipliers.get(traffic_level, 1.0)
         weather_factor = weather_multipliers.get(weather_condition, 1.0)
         road_factor = road_multipliers.get(road_type, 1.0)
 
         adjusted_speed = base_speed * road_factor * traffic_factor * weather_factor
-        adjusted_speed = max(adjusted_speed, 35.0)  # Mínimo 35 km/h
+        adjusted_speed = max(adjusted_speed, 25.0)  # Mínimo realista
 
-        # Tiempo en horas
+        # Tiempo base de viaje
         travel_time = distance_km / adjusted_speed
 
-        # CORRECCIÓN: Tiempo base para paradas/maniobras más realista
-        stops_time = 0.5 + (distance_km / 200) * 0.5  # Más paradas en distancias largas
+        # Tiempo adicional por paradas/logística (escalable)
+        if distance_km <= 50:
+            logistics_time = 0.25  # 15 min para local
+        elif distance_km <= 200:
+            logistics_time = 0.5  # 30 min para regional
+        elif distance_km <= 800:
+            logistics_time = 1.0  # 1h para nacional
+        else:
+            logistics_time = 2.0  # 2h para larga distancia
 
-        total_time = travel_time + stops_time
+        total_time = travel_time + logistics_time
 
         logger.info(f"🚛 Viaje: {distance_km:.1f}km a {adjusted_speed:.1f}km/h = {total_time:.1f}h")
 
-        return round(max(0.5, total_time), 1)
+        return round(max(0.3, total_time), 1)
 
     @staticmethod
-    def calculate_optimal_route_sequence(locations: List[Dict[str, Any]],
-                                         start_location: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """🎯 Calcula secuencia óptima de ubicaciones (TSP simplificado)"""
-        if not locations:
-            return []
-
-        if len(locations) == 1:
-            return locations
-
-        if len(locations) == 2:
-            # Para 2 ubicaciones, calcular cuál es más cercana primero
-            loc1, loc2 = locations[0], locations[1]
-
-            try:
-                dist_to_1 = GeoCalculator.calculate_distance_km(
-                    start_location['latitud'], start_location['longitud'],
-                    loc1['latitud'], loc1['longitud']
-                )
-
-                dist_to_2 = GeoCalculator.calculate_distance_km(
-                    start_location['latitud'], start_location['longitud'],
-                    loc2['latitud'], loc2['longitud']
-                )
-
-                if dist_to_1 <= dist_to_2:
-                    return [loc1, loc2]
-                else:
-                    return [loc2, loc1]
-            except Exception as e:
-                logger.warning(f"❌ Error ordenando 2 ubicaciones: {e}")
-                return locations
-
-        # Para 3+ ubicaciones, usar heurística greedy
-        return GeoCalculator._greedy_tsp(start_location, locations)
+    def get_road_type_by_distance(distance_km: float) -> str:
+        """🛣️ Determina tipo de camino por distancia"""
+        if distance_km <= 20:
+            return 'urbano'
+        elif distance_km <= 100:
+            return 'suburbano'
+        elif distance_km <= 500:
+            return 'carretera'
+        else:
+            return 'autopista'
 
     @staticmethod
-    def _greedy_tsp(start: Dict[str, Any], locations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """🔄 Algoritmo greedy para TSP simplificado"""
+    def clear_cache():
+        """🗑️ Limpiar cache de coordenadas"""
+        GeoCalculator._coordinate_cache.clear()
+        logger.info("🗑️ Cache de coordenadas limpiado")
+
+    @staticmethod
+    def validate_postal_code_coordinates(cp: str, lat: float, lon: float) -> bool:
+        """📮 Valida que las coordenadas coincidan con el código postal"""
         try:
-            unvisited = locations.copy()
-            route = []
-            current_location = start
+            # Validaciones específicas por rangos de CP
+            cp_int = int(cp[:2])  # Primeros 2 dígitos
 
-            while unvisited:
-                # Encontrar la ubicación más cercana no visitada
-                closest_location = None
-                min_distance = float('inf')
+            # Validaciones básicas por estado
+            if cp_int == 77:  # Quintana Roo
+                return 19.5 <= lat <= 22.0 and -89.0 <= lon <= -86.5
+            elif cp_int == 76:  # Querétaro  
+                return 20.0 <= lat <= 21.5 and -101.0 <= lon <= -99.0
+            elif cp_int in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]:  # CDMX/EdoMex
+                return 19.0 <= lat <= 20.0 and -100.0 <= lon <= -98.5
 
-                for location in unvisited:
-                    try:
-                        distance = GeoCalculator.calculate_distance_km(
-                            current_location['latitud'], current_location['longitud'],
-                            location['latitud'], location['longitud']
-                        )
+            # Para otros estados, validación general de México
+            return 14.5 <= lat <= 32.8 and -117.4 <= lon <= -86.7
 
-                        if distance < min_distance:
-                            min_distance = distance
-                            closest_location = location
-                    except Exception as e:
-                        logger.warning(f"❌ Error calculando distancia en TSP: {e}")
-                        continue
-
-                if closest_location:
-                    route.append(closest_location)
-                    unvisited.remove(closest_location)
-                    current_location = closest_location
-                else:
-                    # Si no se puede calcular, agregar el resto en orden
-                    route.extend(unvisited)
-                    break
-
-            logger.info(f"🎯 Secuencia óptima calculada para {len(route)} ubicaciones")
-            return route
-
-        except Exception as e:
-            logger.error(f"❌ Error en TSP greedy: {e}")
-            return locations  # Fallback al orden original
-
-    @staticmethod
-    def calculate_delivery_zone_metrics(centro_lat: float, centro_lon: float,
-                                        locations: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """📊 Calcula métricas de zona de entrega"""
-        if not locations:
-            return {'coverage_radius': 0, 'density': 0, 'avg_distance': 0}
-
-        # Validar coordenadas del centro
-        if not GeoCalculator._validate_coordinates(centro_lat, centro_lon, centro_lat, centro_lon):
-            return {'coverage_radius': 0, 'density': 0, 'avg_distance': 0}
-
-        distances = []
-        for location in locations:
-            try:
-                lat = location.get('latitud', 0)
-                lon = location.get('longitud', 0)
-
-                if GeoCalculator._validate_coordinates(lat, lon, lat, lon):
-                    distance = GeoCalculator.calculate_distance_km(
-                        centro_lat, centro_lon, lat, lon
-                    )
-                    if distance > 0:
-                        distances.append(distance)
-            except Exception as e:
-                logger.warning(f"❌ Error calculando distancia en métricas: {e}")
-                continue
-
-        if not distances:
-            return {'coverage_radius': 0, 'density': 0, 'avg_distance': 0}
-
-        # Calcular métricas
-        avg_distance = sum(distances) / len(distances)
-        max_distance = max(distances)
-        min_distance = min(distances)
-
-        # Área aproximada del círculo que cubre todas las ubicaciones
-        coverage_area = math.pi * (max_distance ** 2)
-        density = len(locations) / coverage_area if coverage_area > 0 else 0
-
-        return {
-            'coverage_radius_km': round(max_distance, 2),
-            'avg_distance_km': round(avg_distance, 2),
-            'min_distance_km': round(min_distance, 2),
-            'density_per_km2': round(density, 4),
-            'total_locations': len(locations),
-            'coverage_area_km2': round(coverage_area, 2)
-        }
-
-    @staticmethod
-    def is_within_delivery_polygon(lat: float, lon: float,
-                                   polygon_points: List[Tuple[float, float]]) -> bool:
-        """🔍 Verifica si un punto está dentro de un polígono de entrega"""
-        if len(polygon_points) < 3:
-            return True
-
-        if not GeoCalculator._validate_coordinates(lat, lon, lat, lon):
+        except (ValueError, TypeError):
             return False
-
-        try:
-            x, y = lon, lat
-            n = len(polygon_points)
-            inside = False
-
-            j = n - 1
-            for i in range(n):
-                if ((polygon_points[i][0] > y) != (polygon_points[j][0] > y)) and \
-                        (x < (polygon_points[j][1] - polygon_points[i][1]) *
-                         (y - polygon_points[i][0]) / (polygon_points[j][0] - polygon_points[i][0]) +
-                         polygon_points[i][1]):
-                    inside = not inside
-                j = i
-
-            return inside
-
-        except Exception as e:
-            logger.warning(f"❌ Error en verificación de polígono: {e}")
-            return True

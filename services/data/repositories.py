@@ -16,10 +16,27 @@ class DataManager:
         self._load_time = None
         self._load_all_csvs()
 
+    @staticmethod
+    def _fix_lat(lat_val):
+        """Corrige latitudes corruptas 194.326 → 19.4326"""
+        if lat_val > 90:
+            lat_str = str(abs(lat_val))
+            return float(lat_str[:2] + '.' + lat_str[2:].replace('.', ''))
+        return lat_val
+
+    @staticmethod
+    def _fix_lon(lon_val):
+        """Corrige longitudes corruptas 991.332 → -99.1332"""
+        if lon_val > 180:
+            lon_str = str(abs(lon_val))
+            return -float(lon_str[:2] + '.' + lon_str[2:].replace('.', ''))
+        return lon_val
+
     def _load_all_csvs(self):
-        """📂 Carga TODOS los CSVs una vez en memoria"""
+        """📂 Carga Y PRE-PROCESA todos los CSVs optimizados"""
         start_time = time.time()
 
+        # CSV con nombres exactos que mencionaste
         csv_files = {
             'tiendas': 'liverpool_tiendas_completo.csv',
             'productos': 'productos_liverpool_50.csv',
@@ -32,16 +49,30 @@ class DataManager:
         }
 
         for key, filename in csv_files.items():
-            file_path = self.data_dir / filename
-            if file_path.exists():
-                self._data[key] = pl.read_csv(file_path)
-                logger.info(f"✅ {filename}: {self._data[key].height} registros")
-            else:
-                logger.warning(f"❌ CSV no encontrado: {filename}")
-                self._data[key] = pl.DataFrame()
+            df = pl.read_csv(self.data_dir / filename)
 
-        self._load_time = time.time() - start_time
-        logger.info(f"🚀 Todos los CSVs cargados en memoria: {self._load_time:.2f}s")
+            # PRE-PROCESAR según tus especificaciones
+            if key == 'tiendas':
+                # Corregir coordenadas corruptas AUTOMÁTICAMENTE
+                df = df.with_columns([
+                    pl.col('latitud').map_elements(self._fix_lat).alias('latitud'),
+                    pl.col('longitud').map_elements(self._fix_lon).alias('longitud')
+                ])
+
+            elif key == 'cedis':
+                # Corregir coordenadas CEDIS también
+                df = df.with_columns([
+                    pl.col('latitud').map_elements(self._fix_lat).alias('latitud'),
+                    pl.col('longitud').map_elements(self._fix_lon).alias('longitud')
+                ])
+
+            elif key == 'productos':
+                # Pre-procesar tiendas_disponibles como lista
+                df = df.with_columns([
+                    pl.col('tiendas_disponibles').str.split(',').alias('tiendas_list')
+                ])
+
+            self._data[key] = df
 
     def get_data(self, key: str) -> pl.DataFrame:
         """📊 Obtiene DataFrame desde memoria"""
