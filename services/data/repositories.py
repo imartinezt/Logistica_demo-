@@ -218,128 +218,190 @@ class OptimizedStockRepository:
 
     def calculate_optimal_allocation(self, stock_locations: List[Dict[str, Any]],
                                      cantidad_requerida: int,
-                                     stores_info: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """🧠 Calcula asignación óptima con logging DETALLADO de decisión"""
+                                     stores_info: List[Dict[str, Any]],
+                                     sku_id: str = None,
+                                     codigo_postal: str = None,
+                                     fecha_entrega: str = None) -> Dict[str, Any]:
+        """🧠 SISTEMA DE ASIGNACIÓN OPTIMIZADO con logs profesionales y datos reales"""
 
         if not stock_locations:
-            return {
-                'factible': False,
-                'razon': 'Sin stock disponible',
-                'plan': []
-            }
+            return {'factible': False, 'razon': 'Sin stock disponible', 'plan': []}
 
-        # Crear mapa de distancias
+        # ✅ 1. CONTEXTO DEL DESTINO
+        contexto = self._get_destination_context(codigo_postal, fecha_entrega) if codigo_postal else {}
+
+        logger.info(f"")
+        logger.info(f"🎯 ANÁLISIS DE ASIGNACIÓN OPTIMIZADA")
+        logger.info(f"{'=' * 60}")
+        logger.info(f"📦 SKU: {sku_id} | Cantidad: {cantidad_requerida} unidades")
+
+        if codigo_postal:
+            logger.info(f"📍 Destino: CP {codigo_postal}")
+
+            if contexto.get('cp_info'):
+                cp_data = contexto['cp_info']
+                logger.info(f"   🏙️ Zona: {cp_data.get('estado_alcaldia', 'N/A')}")
+                logger.info(f"   🛡️ Seguridad: {cp_data.get('zona_seguridad', 'N/A')}")
+                logger.info(f"   ⏰ Tiempo base: {cp_data.get('tiempo_entrega_base_horas', 'N/A')} horas")
+
+            if contexto.get('factores_externos'):
+                factores = contexto['factores_externos']
+                logger.info(f"   📅 Evento: {factores.get('evento_detectado', 'Normal')}")
+                logger.info(f"   📈 Factor demanda: {factores.get('factor_demanda', '1.0')}x")
+                logger.info(f"   🌤️ Clima: {factores.get('condicion_clima', 'Normal')}")
+                logger.info(f"   🚦 Tráfico: {factores.get('trafico_nivel', 'Normal')}")
+                logger.info(f"   ⚠️ Criticidad: {factores.get('criticidad_logistica', 'Baja')}")
+
+        # ✅ 2. EVALUACIÓN DE CANDIDATOS CON DATOS REALES
+        logger.info(f"")
+        logger.info(f"📊 EVALUACIÓN DE CANDIDATOS")
+        logger.info(f"{'-' * 60}")
+
+        # Crear mapas de datos
         distance_map = {store['tienda_id']: store['distancia_km'] for store in stores_info}
 
-        logger.info(f"🧠 EVALUANDO ASIGNACIÓN ÓPTIMA:")
-        logger.info(f"   🎯 Cantidad requerida: {cantidad_requerida} unidades")
-        logger.info(f"   📊 Candidatos con stock:")
+        # ✅ CORRECCIÓN DEL BUG: Obtener nombres reales de tiendas
+        name_map = {}
+        tiendas_df = self.data_manager.get_data('tiendas')
+        for store in stores_info:
+            tienda_real = tiendas_df.filter(pl.col('tienda_id') == store['tienda_id'])
+            if tienda_real.height > 0:
+                name_map[store['tienda_id']] = tienda_real.to_dicts()[0]['nombre_tienda']
+            else:
+                name_map[store['tienda_id']] = f"Tienda {store['tienda_id']}"
 
-        # ✅ NUEVO: Calcular score para CADA tienda candidata
-        candidates_with_scores = []
+        # Calcular métricas reales para cada candidato
+        candidates_data = []
 
         for stock in stock_locations:
             tienda_id = stock['tienda_id']
-            stock_disponible = stock['stock_disponible']
-            precio_tienda = stock.get('precio_tienda', 0)
             distancia = distance_map.get(tienda_id, 999)
+            nombre_tienda = name_map.get(tienda_id, f"Tienda {tienda_id}")
 
-            # Encontrar nombre de tienda
-            store_info = next((s for s in stores_info if s['tienda_id'] == tienda_id), None)
-            nombre_tienda = store_info['nombre_tienda'] if store_info else f"Tienda {tienda_id}"
+            # ✅ CALCULAR TIEMPO Y COSTO REALES
+            metrics = self._calculate_real_time_and_cost(
+                tienda_id, sku_id, cantidad_requerida, distancia
+            ) if sku_id else self._calculate_fallback_metrics(distancia, cantidad_requerida)
 
-            # CÁLCULO DE SCORE DE PREFERENCIA
-            # Factores: stock alto + distancia corta + precio competitivo
-
-            # Score por stock (más stock = mejor)
-            stock_score = min(10.0, stock_disponible / 5.0)  # Máximo 10 puntos
-
-            # Score por distancia (menos distancia = mejor)
-            if distancia <= 10:
-                distance_score = 10.0
-            elif distancia <= 20:
-                distance_score = 8.0
-            elif distancia <= 50:
-                distance_score = 6.0
-            elif distancia <= 100:
-                distance_score = 4.0
-            else:
-                distance_score = 1.0
-
-            # Score por precio (menor precio = mejor)
-            if precio_tienda > 0:
-                # Encontrar precio mínimo para normalizar
-                precios = [s.get('precio_tienda', 0) for s in stock_locations if s.get('precio_tienda', 0) > 0]
-                if precios:
-                    min_precio = min(precios)
-                    price_score = max(1.0, 10.0 - ((precio_tienda - min_precio) / min_precio * 5))
-                else:
-                    price_score = 5.0
-            else:
-                price_score = 5.0  # Precio neutro si no hay datos
-
-            # Score por disponibilidad (cubre completamente la demanda = bonus)
-            availability_score = 10.0 if stock_disponible >= cantidad_requerida else 5.0
-
-            # SCORE TOTAL PONDERADO
-            total_score = (
-                    distance_score * 0.40 +  # 40% peso a distancia
-                    stock_score * 0.25 +  # 25% peso a stock
-                    availability_score * 0.20 +  # 20% peso a disponibilidad
-                    price_score * 0.15  # 15% peso a precio
-            )
-
-            candidates_with_scores.append({
+            candidates_data.append({
                 'tienda_id': tienda_id,
                 'nombre_tienda': nombre_tienda,
-                'stock_disponible': stock_disponible,
-                'precio_tienda': precio_tienda,
+                'stock_disponible': stock['stock_disponible'],
                 'distancia_km': distancia,
-                'scores': {
-                    'stock': stock_score,
-                    'distancia': distance_score,
-                    'precio': price_score,
-                    'disponibilidad': availability_score,
-                    'total': total_score
-                },
+                'precio_tienda': stock.get('precio_tienda', 0),
+                **metrics,
                 'stock_data': stock
             })
 
-            # ✅ LOGGING DETALLADO: Mostrar cálculo para cada tienda
-            logger.info(f"   📍 {nombre_tienda}:")
-            logger.info(f"      → Stock: {stock_disponible} unidades (score: {stock_score:.1f}/10)")
-            logger.info(f"      → Distancia: {distancia:.1f}km (score: {distance_score:.1f}/10)")
-            logger.info(f"      → Precio: ${precio_tienda:,.0f} (score: {price_score:.1f}/10)")
-            logger.info(
-                f"      → Disponibilidad: {'Completa' if stock_disponible >= cantidad_requerida else 'Parcial'} (score: {availability_score:.1f}/10)")
-            logger.info(f"      → 🎯 SCORE TOTAL: {total_score:.2f}/10")
-            logger.info(
-                f"      → Puede cubrir: {'SÍ' if stock_disponible >= cantidad_requerida else 'NO'} ({cantidad_requerida} unidades)")
+        if not candidates_data:
+            return {'factible': False, 'razon': 'No hay candidatos válidos', 'plan': []}
 
-        # Ordenar por score total (mayor es mejor)
-        candidates_with_scores.sort(key=lambda x: x['scores']['total'], reverse=True)
+        # ✅ 3. NORMALIZACIÓN DE SCORES (0-1)
+        tiempos = [c['tiempo_total_horas'] for c in candidates_data]
+        costos = [c['costo_total'] for c in candidates_data]
+        distancias = [c['distancia_km'] for c in candidates_data]
+        stocks = [c['stock_disponible'] for c in candidates_data]
 
-        # ✅ LOGGING: Ranking de candidatos
-        logger.info(f"   🏆 RANKING DE TIENDAS POR SCORE:")
-        logger.info(f"       Pos | Tienda                    | Score | Distancia | Stock | ¿Cubre?")
-        logger.info(f"       ----|---------------------------|-------|-----------|-------|--------")
+        min_tiempo, max_tiempo = min(tiempos), max(tiempos)
+        min_costo, max_costo = min(costos), max(costos)
+        min_distancia, max_distancia = min(distancias), max(distancias)
+        min_stock, max_stock = min(stocks), max(stocks)
 
-        for i, candidate in enumerate(candidates_with_scores, 1):
-            nombre = candidate['nombre_tienda'][:20].ljust(20)
-            score = candidate['scores']['total']
-            distancia = candidate['distancia_km']
-            stock = candidate['stock_disponible']
-            cubre = "SÍ" if stock >= cantidad_requerida else "NO"
+        logger.info(f"📈 PESOS UTILIZADOS:")
+        logger.info(f"   ⏱️ Tiempo: 35% | 💰 Costo: 35% | 📦 Stock: 20% | 📏 Distancia: 10%")
+        logger.info(f"")
 
-            logger.info(f"       {i:2d}. | {nombre} | {score:5.2f} | {distancia:7.1f}km | {stock:3d}   | {cubre:6s}")
+        # Calcular scores normalizados
+        for candidate in candidates_data:
+            # Scores normalizados (0-1, donde 1 = mejor)
+            score_tiempo = 1 - (candidate['tiempo_total_horas'] - min_tiempo) / max(max_tiempo - min_tiempo, 0.1)
+            score_costo = 1 - (candidate['costo_total'] - min_costo) / max(max_costo - min_costo, 0.1)
+            score_distancia = 1 - (candidate['distancia_km'] - min_distancia) / max(max_distancia - min_distancia, 0.1)
+            score_stock = 1.0 if candidate['stock_disponible'] >= cantidad_requerida else 0.6
 
-        # Asignar stock de manera óptima usando el ranking
+            # Score total ponderado
+            PESO_TIEMPO, PESO_COSTO, PESO_STOCK, PESO_DISTANCIA = 0.35, 0.35, 0.20, 0.10
+            total_score = (
+                    score_tiempo * PESO_TIEMPO +
+                    score_costo * PESO_COSTO +
+                    score_stock * PESO_STOCK +
+                    score_distancia * PESO_DISTANCIA
+            )
+
+            candidate['scores'] = {
+                'tiempo': score_tiempo,
+                'costo': score_costo,
+                'distancia': score_distancia,
+                'stock': score_stock,
+                'total': total_score
+            }
+
+        # ✅ 4. RANKING FINAL CON TABLA PROFESIONAL
+        candidates_data.sort(key=lambda x: x['scores']['total'], reverse=True)
+
+        logger.info(f"📊 RUTAS EVALUADAS")
+        logger.info(
+            f"{'Tienda':<20} │ {'Dist':<8} │ {'Tiempo':<8} │ {'Costo':<10} │ {'Stock':<8} │ {'Score':<8} │ {'Flota'}")
+        logger.info(f"{'─' * 20}┼{'─' * 9}┼{'─' * 9}┼{'─' * 11}┼{'─' * 9}┼{'─' * 9}┼{'─' * 10}")
+
+        for i, candidate in enumerate(candidates_data[:6]):  # Mostrar top 6
+            nombre = candidate['nombre_tienda'][:19].ljust(19)
+            dist = f"{candidate['distancia_km']:.0f}km"
+            tiempo = f"{candidate['tiempo_total_horas']:.1f}h"
+            costo = f"${candidate['costo_total']:.0f}"
+            stock = f"{candidate['stock_disponible']}"
+            score = f"{candidate['scores']['total']:.3f}"
+            flota = f"{candidate['fleet_type']}-{candidate['carrier'][:4]}"
+
+            # Destacar el ganador
+            marker = "🏆" if i == 0 else f"{i + 1:2d}."
+
+            logger.info(f"{marker} {nombre} │ {dist:>7} │ {tiempo:>7} │ {costo:>9} │ {stock:>7} │ {score:>7} │ {flota}")
+
+        # ✅ 5. GANADOR Y EXPLICACIÓN DETALLADA
+        if candidates_data:
+            ganador = candidates_data[0]
+            logger.info(f"")
+            logger.info(f"🏆 GANADOR: {ganador['nombre_tienda']}")
+            logger.info(f"{'─' * 50}")
+
+            scores = ganador['scores']
+            explicaciones = []
+
+            if scores['tiempo'] >= 0.8:
+                explicaciones.append(f"⚡ Tiempo excelente ({ganador['tiempo_total_horas']}h)")
+            elif scores['tiempo'] >= 0.6:
+                explicaciones.append(f"⏱️ Tiempo competitivo ({ganador['tiempo_total_horas']}h)")
+
+            if scores['costo'] >= 0.8:
+                explicaciones.append(f"💰 Costo óptimo (${ganador['costo_total']:.0f})")
+            elif scores['costo'] >= 0.6:
+                explicaciones.append(f"💵 Costo aceptable (${ganador['costo_total']:.0f})")
+
+            if scores['stock'] == 1.0:
+                explicaciones.append("📦 Stock completo disponible")
+
+            if ganador['fleet_type'] == 'FI':
+                explicaciones.append("🚛 Flota interna (más rápido)")
+            else:
+                explicaciones.append(f"🚚 Flota externa ({ganador['carrier']})")
+
+            logger.info(f"📋 Ventajas clave:")
+            for exp in explicaciones:
+                logger.info(f"   {exp}")
+
+            logger.info(f"")
+            logger.info(f"📈 Desglose del score (Total: {scores['total']:.3f}):")
+            logger.info(f"   ⏱️ Tiempo: {scores['tiempo']:.3f} × 35% = {scores['tiempo'] * 0.35:.3f}")
+            logger.info(f"   💰 Costo:  {scores['costo']:.3f} × 35% = {scores['costo'] * 0.35:.3f}")
+            logger.info(f"   📦 Stock:  {scores['stock']:.3f} × 20% = {scores['stock'] * 0.20:.3f}")
+            logger.info(f"   📏 Dist:   {scores['distancia']:.3f} × 10% = {scores['distancia'] * 0.10:.3f}")
+
+        # ✅ 6. PLAN DE ASIGNACIÓN
         plan = []
         cantidad_cubierta = 0
 
-        logger.info(f"   📋 PROCESO DE ASIGNACIÓN:")
-
-        for candidate in candidates_with_scores:
+        for candidate in candidates_data:
             if cantidad_cubierta >= cantidad_requerida:
                 break
 
@@ -351,49 +413,83 @@ class OptimizedStockRepository:
             if cantidad_a_tomar > 0:
                 plan.append({
                     'tienda_id': candidate['tienda_id'],
+                    'nombre_tienda': candidate['nombre_tienda'],
                     'cantidad': cantidad_a_tomar,
                     'stock_disponible': candidate['stock_disponible'],
                     'distancia_km': candidate['distancia_km'],
                     'precio_tienda': candidate['precio_tienda'],
-                    'precio_unitario': candidate['precio_tienda'],  # Para compatibilidad
+                    'tiempo_total_horas': candidate['tiempo_total_horas'],
+                    'costo_total': candidate['costo_total'],
+                    'fleet_type': candidate['fleet_type'],
+                    'carrier': candidate['carrier'],
                     'score_total': candidate['scores']['total'],
-                    'razon_seleccion': self._get_selection_reason(candidate, candidates_with_scores)
+                    'zona_seguridad': candidate.get('zona_seguridad', 'N/A'),
+                    'razon_seleccion': self._get_detailed_selection_reason(candidate, candidates_data)
                 })
 
                 cantidad_cubierta += cantidad_a_tomar
 
-                # ✅ LOGGING: Decisión de asignación
-                logger.info(f"      ✅ Asignando {cantidad_a_tomar} unidades a {candidate['nombre_tienda']}")
-                logger.info(f"         → Razón: {self._get_selection_reason(candidate, candidates_with_scores)}")
-                logger.info(f"         → Score: {candidate['scores']['total']:.2f}/10 (mejor disponible)")
-                logger.info(f"         → Progreso: {cantidad_cubierta}/{cantidad_requerida} unidades cubiertas")
-
-        # ✅ LOGGING: Resultado final
-        logger.info(f"   📊 RESULTADO DE ASIGNACIÓN:")
-        logger.info(f"      → Tiendas utilizadas: {len(plan)}")
-        logger.info(f"      → Cantidad cubierta: {cantidad_cubierta}/{cantidad_requerida}")
-        logger.info(f"      → Factible: {'SÍ' if cantidad_cubierta >= cantidad_requerida else 'NO'}")
-
-        if cantidad_cubierta >= cantidad_requerida:
-            logger.info(f"      ✅ ASIGNACIÓN EXITOSA")
-
-            # Mostrar resumen de la asignación ganadora
-            for item in plan:
-                store_info = next((s for s in stores_info if s['tienda_id'] == item['tienda_id']), None)
-                nombre_tienda = store_info['nombre_tienda'] if store_info else f"Tienda {item['tienda_id']}"
-                logger.info(
-                    f"         → {nombre_tienda}: {item['cantidad']} unidades (score: {item['score_total']:.2f})")
-        else:
-            logger.warning(f"      ❌ ASIGNACIÓN INCOMPLETA - Faltan {cantidad_requerida - cantidad_cubierta} unidades")
+        logger.info(f"")
+        logger.info(f"✅ ASIGNACIÓN COMPLETADA: {cantidad_cubierta}/{cantidad_requerida} unidades")
+        logger.info(f"{'=' * 60}")
 
         return {
             'factible': cantidad_cubierta >= cantidad_requerida,
             'plan': plan,
             'cantidad_cubierta': cantidad_cubierta,
             'cantidad_faltante': max(0, cantidad_requerida - cantidad_cubierta),
-            'razon': f'Plan con {len(plan)} tiendas (score-based)' if plan else 'Sin stock suficiente',
-            'candidates_evaluated': len(candidates_with_scores),
-            'selection_method': 'score_ponderado'
+            'razon': f'Optimización tiempo-costo con {len(plan)} tienda(s)',
+            'contexto_destino': contexto,
+            'candidates_evaluated': len(candidates_data),
+            'selection_method': 'tiempo_costo_optimizado_v2'
+        }
+
+    def _get_destination_context(self, codigo_postal: str, fecha_entrega: str) -> Dict[str, Any]:
+        """🎯 Obtiene contexto COMPLETO del destino usando los CSVs"""
+
+        if not codigo_postal:
+            return {}
+
+        # Obtener información del CP
+        cp_info = None
+        cp_df = self.data_manager.get_data('codigos_postales')
+        cp_int = int(codigo_postal)
+
+        for row in cp_df.to_dicts():
+            rango_cp = row.get('rango_cp', '')
+            if '-' in rango_cp:
+                try:
+                    inicio, fin = map(int, rango_cp.split('-'))
+                    if inicio <= cp_int <= fin:
+                        cp_info = row
+                        break
+                except ValueError:
+                    continue
+
+        # Obtener clima
+        clima_info = None
+        clima_df = self.data_manager.get_data('clima')
+        for row in clima_df.to_dicts():
+            if row['rango_cp_inicio'] <= cp_int <= row['rango_cp_fin']:
+                clima_info = row
+                break
+
+        # Obtener factores externos para la fecha
+        factores_externos = {}
+        if fecha_entrega:
+            from datetime import datetime
+            try:
+                fecha_dt = datetime.strptime(fecha_entrega, '%Y-%m-%d')
+                factores_externos = self.data_manager.external_factors.get_factors_for_date_and_cp(fecha_dt,
+                                                                                                   codigo_postal)
+            except:
+                factores_externos = {}
+
+        return {
+            'cp_info': cp_info or {},
+            'clima_info': clima_info or {},
+            'factores_externos': factores_externos,
+            'codigo_postal': codigo_postal
         }
 
     def _get_selection_reason(self, candidate: Dict[str, Any], all_candidates: List[Dict[str, Any]]) -> str:
@@ -421,6 +517,144 @@ class OptimizedStockRepository:
 
         if scores['precio'] >= 8.0:
             reasons.append("Precio competitivo")
+
+        return ", ".join(reasons) if reasons else "Mejor opción disponible"
+
+    def _calculate_real_time_and_cost(self, tienda_id: str, sku_id: str,
+                                      cantidad: int, distancia_km: float) -> Dict[str, Any]:
+        """⏱️💰 Calcula tiempo y costo REALES usando datos CSV"""
+
+        # Obtener info de producto
+        productos_df = self.data_manager.get_data('productos')
+        producto_data = productos_df.filter(pl.col('sku_id') == sku_id)
+
+        if producto_data.height > 0:
+            producto = producto_data.to_dicts()[0]
+            tiempo_prep = producto['tiempo_prep_horas']
+            peso_total = producto['peso_kg'] * cantidad
+        else:
+            tiempo_prep = 1.0
+            peso_total = 0.5 * cantidad  # Fallback
+
+        # Obtener info de tienda
+        tiendas_df = self.data_manager.get_data('tiendas')
+        tienda_data = tiendas_df.filter(pl.col('tienda_id') == tienda_id)
+
+        if tienda_data.height > 0:
+            tienda = tienda_data.to_dicts()[0]
+            zona_seguridad = tienda['zona_seguridad']
+        else:
+            zona_seguridad = 'Amarilla'
+
+        # ✅ LÓGICA DE FLOTA CORREGIDA
+        if distancia_km <= 50:
+            # Flota interna (FI)
+            fleet_type = 'FI'
+            carrier = 'Liverpool'
+            velocidad_promedio = 45.0  # km/h en ciudad
+            tiempo_viaje = distancia_km / velocidad_promedio
+
+            # Costo flota interna
+            costo_base = distancia_km * 12.0  # $12/km
+            factor_cantidad = 0.9 if cantidad >= 3 else 1.0
+            costo_total = costo_base * factor_cantidad
+
+        else:
+            # Flota externa (FE)
+            fleet_type = 'FE'
+            velocidad_promedio = 65.0  # km/h carretera
+            tiempo_viaje = distancia_km / velocidad_promedio
+
+            # Obtener mejor carrier externo usando CSV real
+            flota_df = self.data_manager.get_data('flota_externa')
+            carriers_disponibles = flota_df.filter(
+                (pl.col('activo') == True) &
+                (pl.col('peso_min_kg') <= peso_total) &
+                (pl.col('peso_max_kg') >= peso_total)
+            )
+
+            if carriers_disponibles.height > 0:
+                # Calcular costo para cada carrier y tomar el más barato
+                carriers_list = carriers_disponibles.to_dicts()
+                mejor_carrier = min(carriers_list,
+                                    key=lambda x: x['costo_base_mxn'] + (peso_total * x['costo_por_kg_adicional']))
+
+                carrier = mejor_carrier['carrier']
+                costo_total = mejor_carrier['costo_base_mxn'] + (peso_total * mejor_carrier['costo_por_kg_adicional'])
+            else:
+                # Fallback
+                carrier = 'Estafeta'
+                costo_total = 150.0 + (distancia_km * 8.0)
+
+        # Factores de tiempo adicional
+        factor_clima = 0.2 if zona_seguridad == 'Roja' else 0.1
+        factor_distancia = 0.3 if distancia_km > 100 else 0.1
+
+        tiempo_total = tiempo_prep + tiempo_viaje + factor_clima + factor_distancia
+
+        return {
+            'tiempo_total_horas': round(tiempo_total, 1),
+            'costo_total': round(costo_total, 2),
+            'fleet_type': fleet_type,
+            'carrier': carrier,
+            'tiempo_prep': tiempo_prep,
+            'tiempo_viaje': round(tiempo_viaje, 1),
+            'peso_total_kg': peso_total,
+            'zona_seguridad': zona_seguridad
+        }
+
+    def _calculate_fallback_metrics(self, distancia_km: float, cantidad: int) -> Dict[str, Any]:
+        """🔄 Métricas de fallback cuando no hay datos completos"""
+
+        if distancia_km <= 50:
+            fleet_type = 'FI'
+            carrier = 'Liverpool'
+            tiempo_total = 1.0 + (distancia_km / 45.0) + 0.2
+            costo_total = distancia_km * 12.0 * (0.9 if cantidad >= 3 else 1.0)
+        else:
+            fleet_type = 'FE'
+            carrier = 'Estafeta'
+            tiempo_total = 1.0 + (distancia_km / 65.0) + 0.3
+            costo_total = 150.0 + (distancia_km * 8.0)
+
+        return {
+            'tiempo_total_horas': round(tiempo_total, 1),
+            'costo_total': round(costo_total, 2),
+            'fleet_type': fleet_type,
+            'carrier': carrier,
+            'tiempo_prep': 1.0,
+            'tiempo_viaje': round(tiempo_total - 1.2, 1),
+            'peso_total_kg': 0.5 * cantidad,
+            'zona_seguridad': 'Amarilla'
+        }
+
+    def _get_detailed_selection_reason(self, candidate: Dict[str, Any], all_candidates: List[Dict[str, Any]]) -> str:
+        """📝 Genera razón DETALLADA de selección"""
+
+        scores = candidate['scores']
+
+        reasons = []
+
+        # Razón principal
+        if candidate == all_candidates[0]:
+            reasons.append("Mejor score tiempo-costo")
+
+        # Razones específicas por performance
+        if scores['tiempo'] >= 0.8:
+            reasons.append(f"Tiempo excelente ({candidate['tiempo_total_horas']}h)")
+        elif scores['tiempo'] >= 0.6:
+            reasons.append("Tiempo competitivo")
+
+        if scores['costo'] >= 0.8:
+            reasons.append(f"Costo eficiente (${candidate['costo_total']:.0f})")
+        elif scores['costo'] >= 0.6:
+            reasons.append("Costo aceptable")
+
+        if scores['stock'] == 1.0:
+            reasons.append("Stock completo")
+
+        if candidate['fleet_type'] == 'FI':
+            reasons.append("Flota interna")
 
         return ", ".join(reasons) if reasons else "Mejor opción disponible"
 
