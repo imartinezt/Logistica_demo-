@@ -219,7 +219,8 @@ class OptimizedStockRepository:
     def calculate_optimal_allocation(self, stock_locations: List[Dict[str, Any]],
                                      cantidad_requerida: int,
                                      stores_info: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """🧠 Calcula asignación óptima de stock"""
+        """🧠 Calcula asignación óptima con logging DETALLADO de decisión"""
+
         if not stock_locations:
             return {
                 'factible': False,
@@ -230,49 +231,198 @@ class OptimizedStockRepository:
         # Crear mapa de distancias
         distance_map = {store['tienda_id']: store['distancia_km'] for store in stores_info}
 
-        # Ordenar por preferencia: stock alto + distancia corta
-        def preference_score(stock):
-            stock_score = stock['stock_disponible'] / 10.0  # Normalizar
-            distance_penalty = distance_map.get(stock['tienda_id'], 999) / 100.0
-            return stock_score - distance_penalty
+        logger.info(f"🧠 EVALUANDO ASIGNACIÓN ÓPTIMA:")
+        logger.info(f"   🎯 Cantidad requerida: {cantidad_requerida} unidades")
+        logger.info(f"   📊 Candidatos con stock:")
 
-        stock_locations.sort(key=preference_score, reverse=True)
+        # ✅ NUEVO: Calcular score para CADA tienda candidata
+        candidates_with_scores = []
 
-        # Asignar stock de manera óptima
+        for stock in stock_locations:
+            tienda_id = stock['tienda_id']
+            stock_disponible = stock['stock_disponible']
+            precio_tienda = stock.get('precio_tienda', 0)
+            distancia = distance_map.get(tienda_id, 999)
+
+            # Encontrar nombre de tienda
+            store_info = next((s for s in stores_info if s['tienda_id'] == tienda_id), None)
+            nombre_tienda = store_info['nombre_tienda'] if store_info else f"Tienda {tienda_id}"
+
+            # CÁLCULO DE SCORE DE PREFERENCIA
+            # Factores: stock alto + distancia corta + precio competitivo
+
+            # Score por stock (más stock = mejor)
+            stock_score = min(10.0, stock_disponible / 5.0)  # Máximo 10 puntos
+
+            # Score por distancia (menos distancia = mejor)
+            if distancia <= 10:
+                distance_score = 10.0
+            elif distancia <= 20:
+                distance_score = 8.0
+            elif distancia <= 50:
+                distance_score = 6.0
+            elif distancia <= 100:
+                distance_score = 4.0
+            else:
+                distance_score = 1.0
+
+            # Score por precio (menor precio = mejor)
+            if precio_tienda > 0:
+                # Encontrar precio mínimo para normalizar
+                precios = [s.get('precio_tienda', 0) for s in stock_locations if s.get('precio_tienda', 0) > 0]
+                if precios:
+                    min_precio = min(precios)
+                    price_score = max(1.0, 10.0 - ((precio_tienda - min_precio) / min_precio * 5))
+                else:
+                    price_score = 5.0
+            else:
+                price_score = 5.0  # Precio neutro si no hay datos
+
+            # Score por disponibilidad (cubre completamente la demanda = bonus)
+            availability_score = 10.0 if stock_disponible >= cantidad_requerida else 5.0
+
+            # SCORE TOTAL PONDERADO
+            total_score = (
+                    distance_score * 0.40 +  # 40% peso a distancia
+                    stock_score * 0.25 +  # 25% peso a stock
+                    availability_score * 0.20 +  # 20% peso a disponibilidad
+                    price_score * 0.15  # 15% peso a precio
+            )
+
+            candidates_with_scores.append({
+                'tienda_id': tienda_id,
+                'nombre_tienda': nombre_tienda,
+                'stock_disponible': stock_disponible,
+                'precio_tienda': precio_tienda,
+                'distancia_km': distancia,
+                'scores': {
+                    'stock': stock_score,
+                    'distancia': distance_score,
+                    'precio': price_score,
+                    'disponibilidad': availability_score,
+                    'total': total_score
+                },
+                'stock_data': stock
+            })
+
+            # ✅ LOGGING DETALLADO: Mostrar cálculo para cada tienda
+            logger.info(f"   📍 {nombre_tienda}:")
+            logger.info(f"      → Stock: {stock_disponible} unidades (score: {stock_score:.1f}/10)")
+            logger.info(f"      → Distancia: {distancia:.1f}km (score: {distance_score:.1f}/10)")
+            logger.info(f"      → Precio: ${precio_tienda:,.0f} (score: {price_score:.1f}/10)")
+            logger.info(
+                f"      → Disponibilidad: {'Completa' if stock_disponible >= cantidad_requerida else 'Parcial'} (score: {availability_score:.1f}/10)")
+            logger.info(f"      → 🎯 SCORE TOTAL: {total_score:.2f}/10")
+            logger.info(
+                f"      → Puede cubrir: {'SÍ' if stock_disponible >= cantidad_requerida else 'NO'} ({cantidad_requerida} unidades)")
+
+        # Ordenar por score total (mayor es mejor)
+        candidates_with_scores.sort(key=lambda x: x['scores']['total'], reverse=True)
+
+        # ✅ LOGGING: Ranking de candidatos
+        logger.info(f"   🏆 RANKING DE TIENDAS POR SCORE:")
+        logger.info(f"       Pos | Tienda                    | Score | Distancia | Stock | ¿Cubre?")
+        logger.info(f"       ----|---------------------------|-------|-----------|-------|--------")
+
+        for i, candidate in enumerate(candidates_with_scores, 1):
+            nombre = candidate['nombre_tienda'][:20].ljust(20)
+            score = candidate['scores']['total']
+            distancia = candidate['distancia_km']
+            stock = candidate['stock_disponible']
+            cubre = "SÍ" if stock >= cantidad_requerida else "NO"
+
+            logger.info(f"       {i:2d}. | {nombre} | {score:5.2f} | {distancia:7.1f}km | {stock:3d}   | {cubre:6s}")
+
+        # Asignar stock de manera óptima usando el ranking
         plan = []
         cantidad_cubierta = 0
 
-        for stock in stock_locations:
+        logger.info(f"   📋 PROCESO DE ASIGNACIÓN:")
+
+        for candidate in candidates_with_scores:
             if cantidad_cubierta >= cantidad_requerida:
                 break
 
             cantidad_a_tomar = min(
-                stock['stock_disponible'],
+                candidate['stock_disponible'],
                 cantidad_requerida - cantidad_cubierta
             )
 
-            plan.append({
-                'tienda_id': stock['tienda_id'],
-                'cantidad': cantidad_a_tomar,
-                'stock_disponible': stock['stock_disponible'],
-                'distancia_km': distance_map.get(stock['tienda_id'], 0),
-                'precio_tienda': stock.get('precio_tienda', 0)
-            })
+            if cantidad_a_tomar > 0:
+                plan.append({
+                    'tienda_id': candidate['tienda_id'],
+                    'cantidad': cantidad_a_tomar,
+                    'stock_disponible': candidate['stock_disponible'],
+                    'distancia_km': candidate['distancia_km'],
+                    'precio_tienda': candidate['precio_tienda'],
+                    'precio_unitario': candidate['precio_tienda'],  # Para compatibilidad
+                    'score_total': candidate['scores']['total'],
+                    'razon_seleccion': self._get_selection_reason(candidate, candidates_with_scores)
+                })
 
-            cantidad_cubierta += cantidad_a_tomar
+                cantidad_cubierta += cantidad_a_tomar
 
-        logger.info(f"📋 Plan de asignación:")
-        for item in plan:
-            logger.info(f"  🏪 {item['tienda_id']}: {item['cantidad']} unidades (${item['precio_tienda']})")
+                # ✅ LOGGING: Decisión de asignación
+                logger.info(f"      ✅ Asignando {cantidad_a_tomar} unidades a {candidate['nombre_tienda']}")
+                logger.info(f"         → Razón: {self._get_selection_reason(candidate, candidates_with_scores)}")
+                logger.info(f"         → Score: {candidate['scores']['total']:.2f}/10 (mejor disponible)")
+                logger.info(f"         → Progreso: {cantidad_cubierta}/{cantidad_requerida} unidades cubiertas")
+
+        # ✅ LOGGING: Resultado final
+        logger.info(f"   📊 RESULTADO DE ASIGNACIÓN:")
+        logger.info(f"      → Tiendas utilizadas: {len(plan)}")
+        logger.info(f"      → Cantidad cubierta: {cantidad_cubierta}/{cantidad_requerida}")
+        logger.info(f"      → Factible: {'SÍ' if cantidad_cubierta >= cantidad_requerida else 'NO'}")
+
+        if cantidad_cubierta >= cantidad_requerida:
+            logger.info(f"      ✅ ASIGNACIÓN EXITOSA")
+
+            # Mostrar resumen de la asignación ganadora
+            for item in plan:
+                store_info = next((s for s in stores_info if s['tienda_id'] == item['tienda_id']), None)
+                nombre_tienda = store_info['nombre_tienda'] if store_info else f"Tienda {item['tienda_id']}"
+                logger.info(
+                    f"         → {nombre_tienda}: {item['cantidad']} unidades (score: {item['score_total']:.2f})")
+        else:
+            logger.warning(f"      ❌ ASIGNACIÓN INCOMPLETA - Faltan {cantidad_requerida - cantidad_cubierta} unidades")
 
         return {
             'factible': cantidad_cubierta >= cantidad_requerida,
             'plan': plan,
             'cantidad_cubierta': cantidad_cubierta,
             'cantidad_faltante': max(0, cantidad_requerida - cantidad_cubierta),
-            'razon': f'Plan con {len(plan)} tiendas' if plan else 'Sin stock suficiente'
+            'razon': f'Plan con {len(plan)} tiendas (score-based)' if plan else 'Sin stock suficiente',
+            'candidates_evaluated': len(candidates_with_scores),
+            'selection_method': 'score_ponderado'
         }
 
+    def _get_selection_reason(self, candidate: Dict[str, Any], all_candidates: List[Dict[str, Any]]) -> str:
+        """📝 Genera razón de selección para una tienda"""
+
+        scores = candidate['scores']
+
+        reasons = []
+
+        # Razón principal por score
+        if candidate == all_candidates[0]:
+            reasons.append("Mayor score total")
+
+        # Razones específicas
+        if scores['distancia'] >= 8.0:
+            reasons.append("Muy cerca")
+        elif scores['distancia'] >= 6.0:
+            reasons.append("Distancia aceptable")
+
+        if scores['disponibilidad'] == 10.0:
+            reasons.append("Cubre demanda completa")
+
+        if scores['stock'] >= 8.0:
+            reasons.append("Alto stock")
+
+        if scores['precio'] >= 8.0:
+            reasons.append("Precio competitivo")
+
+        return ", ".join(reasons) if reasons else "Mejor opción disponible"
 
 class OptimizedExternalFactorsRepository:
     """🌤️ Repositorio de factores externos optimizado"""

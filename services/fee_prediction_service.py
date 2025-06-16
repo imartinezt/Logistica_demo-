@@ -116,26 +116,38 @@ class FEEPredictionService:
     async def _analyze_stock_dynamic(self, request: PredictionRequest,
                                      product_info: Dict[str, Any],
                                      nearby_stores: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """📦 Análisis de stock CORREGIDO - prioriza tiendas locales"""
+        """📦 Análisis de stock CORREGIDO - con logging mejorado"""
 
         # Tiendas autorizadas para el SKU
         tiendas_autorizadas = [t.strip() for t in product_info['tiendas_disponibles'].split(',')]
         logger.info(f"🏪 Tiendas autorizadas para {request.sku_id}: {tiendas_autorizadas}")
 
         # PASO 1: Buscar en tiendas locales PRIMERO
-        local_store_ids = [store['tienda_id'] for store in nearby_stores[:5]]  # Top 5 más cercanas
+        local_store_ids = [store['tienda_id'] for store in nearby_stores[:5]]
         stock_locations_local = self.repos.stock.get_stock_for_stores_and_sku(
             request.sku_id, local_store_ids, request.cantidad
         )
 
+        # ✅ LOGGING MEJORADO: Mostrar tiendas cercanas con nombres
+        logger.info(f"📍 Tiendas cercanas al CP {request.codigo_postal}:")
+        for i, store in enumerate(nearby_stores[:5], 1):
+            logger.info(f"   {i}. {store['nombre_tienda']} ({store['distancia_km']:.1f}km)")
+
         # Verificar si hay stock local suficiente
         if stock_locations_local:
-            total_local_stock = sum(loc['stock_disponible'] for loc in stock_locations_local)
-            logger.info(f"📊 Stock total disponible: {total_local_stock} | Requerido: {request.cantidad}")
+            # ✅ LOGGING MEJORADO: Mostrar stock con nombres de tiendas
+            logger.info(f"📦 Stock LOCAL encontrado para {request.sku_id}:")
+            total_local_stock = 0
+            for stock_loc in stock_locations_local:
+                tienda_info = self._get_store_info_sync(stock_loc['tienda_id'])
+                nombre_tienda = tienda_info['nombre_tienda'] if tienda_info else f"Tienda {stock_loc['tienda_id']}"
+                logger.info(f"   📍 {nombre_tienda}: {stock_loc['stock_disponible']} unidades")
+                total_local_stock += stock_loc['stock_disponible']
+
+            logger.info(f"📊 Stock LOCAL total: {total_local_stock} | Requerido: {request.cantidad}")
 
             if total_local_stock >= request.cantidad:
-                logger.info(
-                    f"✅ Stock LOCAL suficiente: {total_local_stock} unidades en {len(stock_locations_local)} tiendas")
+                logger.info(f"✅ Stock LOCAL suficiente en {len(stock_locations_local)} tiendas cercanas")
 
                 # Usar solo tiendas locales con stock
                 authorized_nearby = [
@@ -148,6 +160,22 @@ class FEEPredictionService:
                 )
 
                 if allocation['factible']:
+                    # ✅ LOGGING MEJORADO: Plan de asignación con detalles
+                    logger.info("📋 Plan de asignación LOCAL:")
+                    for plan_item in allocation['plan']:
+                        tienda_info = self._get_store_info_sync(plan_item['tienda_id'])
+                        nombre_tienda = tienda_info[
+                            'nombre_tienda'] if tienda_info else f"Tienda {plan_item['tienda_id']}"
+                        precio_unitario = plan_item.get('precio_unitario', 0)
+                        precio_total = precio_unitario * plan_item['cantidad']
+                        distancia = tienda_info.get('distancia_km', 0) if tienda_info else 0
+
+                        logger.info(f"   🏪 {nombre_tienda}:")
+                        logger.info(f"      → {plan_item['cantidad']} unidades")
+                        logger.info(f"      → ${precio_total:,.0f} total (${precio_unitario:,.0f} c/u)")
+                        logger.info(f"      → {distancia:.1f}km de distancia")
+                        logger.info(f"      → Razón: Stock local disponible, distancia óptima")
+
                     split_inventory = self._build_split_inventory(allocation['plan'], request.cantidad)
                     return {
                         'factible': True,
@@ -159,7 +187,7 @@ class FEEPredictionService:
                     }
 
         # PASO 2: Si no hay stock local suficiente, buscar en tiendas autorizadas nacionales
-        logger.info("🌎 Stock local insuficiente, buscando en tiendas autorizadas...")
+        logger.info("🌎 Stock local insuficiente, buscando en tiendas autorizadas nacionales...")
 
         # Buscar tiendas autorizadas a nivel nacional
         tiendas_df = self.repos.data_manager.get_data('tiendas')
@@ -186,12 +214,18 @@ class FEEPredictionService:
                 )
                 store['distancia_km'] = distance
             except Exception as e:
-                logger.warning(f"⚠️ Error calculando distancia para {store.get('tienda_id')}: {e}")
+                logger.warning(
+                    f"⚠️ Error calculando distancia para {store.get('nombre_tienda', store.get('tienda_id'))}: {e}")
                 store['distancia_km'] = 999.0
 
         # Ordenar por distancia y tomar las 10 más cercanas
         authorized_stores.sort(key=lambda x: x['distancia_km'])
         authorized_nearby = authorized_stores[:10]
+
+        # ✅ LOGGING MEJORADO: Mostrar tiendas autorizadas encontradas
+        logger.info(f"🏪 Tiendas autorizadas más cercanas:")
+        for i, store in enumerate(authorized_nearby[:5], 1):
+            logger.info(f"   {i}. {store['nombre_tienda']} ({store['distancia_km']:.1f}km)")
 
         # Buscar stock real en tiendas autorizadas
         store_ids = [store['tienda_id'] for store in authorized_nearby]
@@ -205,6 +239,19 @@ class FEEPredictionService:
                 'razon': f'Sin stock disponible para {request.sku_id} en tiendas autorizadas'
             }
 
+        # ✅ LOGGING MEJORADO: Mostrar stock encontrado con detalles
+        logger.info(f"📦 Stock NACIONAL encontrado para {request.sku_id}:")
+        total_stock = 0
+        for stock_loc in stock_locations:
+            tienda_info = next((s for s in authorized_nearby if s['tienda_id'] == stock_loc['tienda_id']), None)
+            nombre_tienda = tienda_info['nombre_tienda'] if tienda_info else f"Tienda {stock_loc['tienda_id']}"
+            distancia = tienda_info['distancia_km'] if tienda_info else 999
+
+            logger.info(f"   📍 {nombre_tienda}: {stock_loc['stock_disponible']} unidades ({distancia:.1f}km)")
+            total_stock += stock_loc['stock_disponible']
+
+        logger.info(f"📊 Stock NACIONAL total: {total_stock} | Requerido: {request.cantidad}")
+
         # Calcular asignación óptima
         allocation = self.repos.stock.calculate_optimal_allocation(
             stock_locations, request.cantidad, authorized_nearby
@@ -215,6 +262,22 @@ class FEEPredictionService:
                 'factible': False,
                 'razon': allocation['razon']
             }
+
+        # ✅ LOGGING MEJORADO: Plan de asignación final con justificación
+        logger.info("📋 Plan de asignación FINAL:")
+        for plan_item in allocation['plan']:
+            tienda_info = next((s for s in authorized_nearby if s['tienda_id'] == plan_item['tienda_id']), None)
+            nombre_tienda = tienda_info['nombre_tienda'] if tienda_info else f"Tienda {plan_item['tienda_id']}"
+            distancia = tienda_info['distancia_km'] if tienda_info else 999
+            precio_unitario = plan_item.get('precio_unitario', 0)
+            precio_total = precio_unitario * plan_item['cantidad']
+
+            logger.info(f"   🏪 {nombre_tienda}:")
+            logger.info(f"      → {plan_item['cantidad']} unidades de {request.cantidad} requeridas")
+            logger.info(f"      → ${precio_total:,.0f} total (${precio_unitario:,.0f} por unidad)")
+            logger.info(f"      → {distancia:.1f}km del destino")
+            logger.info(
+                f"      → Razón: {'Mejor distancia' if distancia < 200 else 'Única opción'} con stock suficiente")
 
         # Construir SplitInventory
         split_inventory = self._build_split_inventory(allocation['plan'], request.cantidad)
@@ -277,26 +340,35 @@ class FEEPredictionService:
                                            cp_info: Dict[str, Any],
                                            external_factors: Dict[str, Any],
                                            request: PredictionRequest) -> List[Dict[str, Any]]:
-        """🗺️ Generación de candidatos con ruteo REAL"""
+        """🗺️ Generación de candidatos con ruteo REAL y logging mejorado"""
 
         allocation_plan = stock_analysis['allocation_plan']
         target_lat = cp_info['latitud_centro']
         target_lon = cp_info['longitud_centro']
         candidates = []
 
+        logger.info(f"🗺️ Evaluando opciones de entrega para {len(allocation_plan)} asignaciones:")
+
         # Verificar si hay stock local vs requiere ruteo complejo
-        for plan_item in allocation_plan:
+        for i, plan_item in enumerate(allocation_plan, 1):
             tienda_origen = await self._get_store_info(plan_item['tienda_id'])
             distance_direct = GeoCalculator.calculate_distance_km(
                 float(tienda_origen['latitud']), float(tienda_origen['longitud']),
                 target_lat, target_lon
             )
 
-            logger.info(f"📏 Evaluando: {plan_item['tienda_id']} → {request.codigo_postal}: {distance_direct:.1f}km")
+            # ✅ LOGGING MEJORADO: Evaluación detallada
+            logger.info(f"📏 Opción {i}: {tienda_origen['nombre_tienda']} → CP {request.codigo_postal}")
+            logger.info(f"   📍 Coordenadas tienda: ({tienda_origen['latitud']:.4f}, {tienda_origen['longitud']:.4f})")
+            logger.info(f"   📍 Coordenadas destino: ({target_lat:.4f}, {target_lon:.4f})")
+            logger.info(f"   📏 Distancia directa: {distance_direct:.1f}km")
+            logger.info(f"   📦 Cantidad asignada: {plan_item['cantidad']} unidades")
 
             # LÓGICA REAL: Determinar tipo de ruteo
             if distance_direct <= 100:  # Stock local
-                logger.info("✅ Stock LOCAL - Ruta directa")
+                logger.info(f"   ✅ RUTA DIRECTA - Distancia local ({distance_direct:.1f}km ≤ 100km)")
+                logger.info(f"   🚛 Usando flota interna Liverpool")
+
                 direct_candidate = await self._create_direct_route_dynamic(
                     plan_item, (target_lat, target_lon), external_factors, request, cp_info
                 )
@@ -304,8 +376,16 @@ class FEEPredictionService:
                     direct_candidate['has_local_stock'] = True
                     candidates.append(direct_candidate)
 
+                    # ✅ LOGGING: Resultado de ruta directa
+                    logger.info(f"   📊 Ruta directa creada:")
+                    logger.info(f"      → Tiempo total: {direct_candidate['tiempo_total_horas']:.1f}h")
+                    logger.info(f"      → Costo total: ${direct_candidate['costo_total_mxn']:.0f}")
+                    logger.info(f"      → Probabilidad éxito: {direct_candidate['probabilidad_cumplimiento']:.1%}")
+
             else:  # Requiere ruteo complejo con CEDIS
-                logger.info("🔄 Stock REMOTO - Ruteo complejo con CEDIS")
+                logger.info(f"   🔄 RUTEO COMPLEJO - Distancia remota ({distance_direct:.1f}km > 100km)")
+                logger.info(f"   🏭 Requiere CEDIS intermedio para optimizar ruta")
+
                 complex_candidate = await self._create_complex_routing_with_cedis(
                     [plan_item], (target_lat, target_lon), request.codigo_postal, external_factors
                 )
@@ -313,7 +393,23 @@ class FEEPredictionService:
                     complex_candidate['has_local_stock'] = False
                     candidates.append(complex_candidate)
 
-        logger.info(f"🗺️ Candidatos generados: {len(candidates)} con lógica REAL")
+                    # ✅ LOGGING: Resultado de ruteo complejo
+                    logger.info(f"   📊 Ruteo complejo creado:")
+                    logger.info(f"      → Tiempo total: {complex_candidate['tiempo_total_horas']:.1f}h")
+                    logger.info(f"      → Costo total: ${complex_candidate['costo_total_mxn']:.0f}")
+                    logger.info(f"      → Segmentos: {len(complex_candidate['segmentos'])}")
+                    logger.info(f"      → Probabilidad éxito: {complex_candidate['probabilidad_cumplimiento']:.1%}")
+
+        logger.info(f"🗺️ Resumen de candidatos generados:")
+        logger.info(f"   📊 Total candidatos: {len(candidates)}")
+
+        for i, candidate in enumerate(candidates, 1):
+            logger.info(f"   {i}. {candidate.get('origen_principal', 'N/A')} → Cliente")
+            logger.info(f"      Tipo: {candidate['tipo_ruta']}")
+            logger.info(f"      Tiempo: {candidate['tiempo_total_horas']:.1f}h")
+            logger.info(f"      Costo: ${candidate['costo_total_mxn']:.0f}")
+            logger.info(f"      Stock local: {'Sí' if candidate.get('has_local_stock', False) else 'No'}")
+
         return candidates
 
     async def _create_cedis_route(self, plan_item: Dict[str, Any],
@@ -596,40 +692,43 @@ class FEEPredictionService:
                                            external_factors: Dict[str, Any],
                                            request: PredictionRequest,
                                            cp_info: Dict[str, Any]) -> Dict[str, Any]:
-        """📍 Crea ruta directa con distancia REAL - CORREGIDA"""
+        """📍 Crea ruta directa con logging explicativo detallado"""
 
         tienda_id = plan_item['tienda_id']
 
-        # ✅ CORRECCIÓN: Obtener coordenadas REALES de la tienda
+        # Obtener coordenadas REALES de la tienda
         tienda_info = await self._get_store_info(tienda_id)
         if not tienda_info:
             logger.error(f"❌ No se encontró info para tienda {tienda_id}")
             return None
 
-        # ✅ CORRECCIÓN: Usar coordenadas reales de la tienda
+        # Usar coordenadas reales de la tienda
         store_lat = float(tienda_info['latitud'])
         store_lon = float(tienda_info['longitud'])
 
-        logger.info(f"📍 Tienda {tienda_id}: lat={store_lat:.4f}, lon={store_lon:.4f}")
-        logger.info(f"📍 Destino CP {request.codigo_postal}: lat={target_coords[0]:.4f}, lon={target_coords[1]:.4f}")
+        # ✅ LOGGING DETALLADO: Información de la ruta
+        logger.info(f"📍 RUTA DIRECTA: {tienda_info['nombre_tienda']} → Cliente")
+        logger.info(f"   🏪 Tienda origen: {tienda_info['nombre_tienda']} ({tienda_id})")
+        logger.info(f"      → Ubicación: {tienda_info.get('direccion_completa', 'N/A')}")
+        logger.info(f"      → Coordenadas: ({store_lat:.4f}, {store_lon:.4f})")
+        logger.info(f"      → Horario: {tienda_info.get('horario_operacion', 'N/A')}")
+        logger.info(f"   📦 Destino: CP {request.codigo_postal}")
+        logger.info(f"      → Coordenadas: ({target_coords[0]:.4f}, {target_coords[1]:.4f})")
 
-        # ✅ CORRECCIÓN CRÍTICA: Calcular distancia REAL
+        # Calcular distancia REAL
         from utils.geo_calculator import GeoCalculator
         distance_km = GeoCalculator.calculate_distance_km(
             store_lat, store_lon,
             target_coords[0], target_coords[1]
         )
 
-        # ✅ DEBUGGING: Verificar cálculo
-        logger.info(f"📏 Distancia calculada: {distance_km:.2f}km")
+        logger.info(f"   📏 Distancia calculada: {distance_km:.2f}km")
 
-        # ✅ CORRECCIÓN: Si distancia es 0, algo está mal
+        # Verificar cálculo de distancia
         if distance_km == 0.0:
-            logger.warning(f"⚠️ Distancia 0.0km detectada - Verificando coordenadas:")
-            logger.warning(f"   Store: ({store_lat}, {store_lon})")
-            logger.warning(f"   Target: ({target_coords[0]}, {target_coords[1]})")
-
-            # Usar distancia mínima si el cálculo falla
+            logger.warning(f"⚠️ Distancia 0.0km detectada - Posible error en coordenadas")
+            logger.warning(
+                f"   Tienda: ({store_lat}, {store_lon}) vs Destino: ({target_coords[0]}, {target_coords[1]})")
             distance_km = 5.0  # 5km mínimo por defecto
             logger.warning(f"   Usando distancia mínima: {distance_km}km")
 
@@ -640,13 +739,19 @@ class FEEPredictionService:
         if distance_km <= 50 and cobertura_liverpool and zona_seguridad in ['Verde', 'Amarilla']:
             fleet_type = 'FI'
             carrier = 'Liverpool'
-            logger.info(f"🚛 Flota Interna - Zona {zona_seguridad}, distancia {distance_km:.1f}km")
+            logger.info(f"   🚛 FLOTA INTERNA seleccionada:")
+            logger.info(f"      → Razón: Distancia local ({distance_km:.1f}km ≤ 50km)")
+            logger.info(f"      → Zona segura: {zona_seguridad}")
+            logger.info(f"      → Cobertura Liverpool: {'Sí' if cobertura_liverpool else 'No'}")
         else:
             fleet_type = 'FE'
             peso_kg = self._calculate_shipment_weight(request, plan_item['cantidad'])
             carriers = self.repos.fleet.get_best_carriers_for_cp(request.codigo_postal, peso_kg)
             carrier = carriers[0]['carrier'] if carriers else 'DHL'
-            logger.info(f"📦 Flota Externa ({carrier}) - Zona {zona_seguridad}, distancia {distance_km:.1f}km")
+            logger.info(f"   📦 FLOTA EXTERNA seleccionada:")
+            logger.info(f"      → Carrier: {carrier}")
+            logger.info(f"      → Razón: Distancia larga ({distance_km:.1f}km > 50km) o zona roja")
+            logger.info(f"      → Peso estimado: {peso_kg:.1f}kg")
 
         # Cálculos con distancia real
         travel_time = self._calculate_travel_time_dynamic(distance_km, fleet_type, external_factors)
@@ -654,25 +759,40 @@ class FEEPredictionService:
         tiempo_extra = external_factors.get('impacto_tiempo_extra_horas', 0)
         total_time = prep_time + travel_time + tiempo_extra
 
-        logger.info(
-            f"⏱️ Tiempos: prep={prep_time:.1f}h + viaje={travel_time:.1f}h + extra={tiempo_extra:.1f}h = {total_time:.1f}h")
+        logger.info(f"   ⏱️ DESGLOSE DE TIEMPOS:")
+        logger.info(f"      → Preparación en tienda: {prep_time:.1f}h")
+        logger.info(f"      → Tiempo de viaje: {travel_time:.1f}h")
+        logger.info(f"      → Factores externos: {tiempo_extra:.1f}h")
+        logger.info(f"      → TOTAL: {total_time:.1f}h")
 
         # Costo dinámico
         if fleet_type == 'FE' and carriers:
             cost = self._calculate_external_fleet_cost(
                 carriers[0], peso_kg, distance_km, external_factors
             )
+            logger.info(f"   💰 COSTO EXTERNO: ${cost:.2f}")
+            logger.info(f"      → Base {carrier}: ${carriers[0]['costo_base_mxn']:.2f}")
+            logger.info(f"      → Factor demanda: {external_factors.get('factor_demanda', 1.0):.2f}")
+            logger.info(f"      → Factor distancia aplicado")
         else:
             cost = self._calculate_internal_fleet_cost(
                 distance_km, plan_item['cantidad'], external_factors
             )
-
-        logger.info(f"💰 Costo calculado: ${cost:.2f} ({fleet_type})")
+            logger.info(f"   💰 COSTO INTERNO: ${cost:.2f}")
+            logger.info(f"      → Base: {distance_km:.1f}km × $12/km = ${distance_km * 12:.2f}")
+            logger.info(f"      → Factor cantidad: {plan_item['cantidad']} unidades")
+            logger.info(f"      → Factor demanda: {external_factors.get('factor_demanda', 1.0):.2f}")
 
         # Probabilidad
         probability = self._calculate_probability_dynamic(
             distance_km, total_time, external_factors, fleet_type, zona_seguridad
         )
+
+        logger.info(f"   📊 RESULTADO FINAL:")
+        logger.info(f"      → Probabilidad de éxito: {probability:.1%}")
+        logger.info(
+            f"      → Score esperado: {'Alto' if probability > 0.8 else 'Medio' if probability > 0.6 else 'Bajo'}")
+        logger.info(f"      → Recomendación: {'✅ Viable' if probability > 0.7 else '⚠️ Riesgoso'}")
 
         return {
             'ruta_id': f"direct_{tienda_id}",
@@ -683,7 +803,7 @@ class FEEPredictionService:
                 'origen': tienda_info['nombre_tienda'],
                 'origen_id': tienda_id,
                 'destino': 'cliente',
-                'distancia_km': distance_km,  # ✅ DISTANCIA REAL
+                'distancia_km': distance_km,
                 'tiempo_horas': travel_time,
                 'tipo_flota': fleet_type,
                 'carrier': carrier,
@@ -692,7 +812,7 @@ class FEEPredictionService:
             }],
             'tiempo_total_horas': total_time,
             'costo_total_mxn': cost,
-            'distancia_total_km': distance_km,  # ✅ DISTANCIA REAL
+            'distancia_total_km': distance_km,
             'probabilidad_cumplimiento': probability,
             'cantidad_cubierta': plan_item['cantidad'],
             'factores_aplicados': [
@@ -701,7 +821,7 @@ class FEEPredictionService:
                 f"carrier_{carrier}",
                 f"zona_{zona_seguridad}",
                 f"eventos_{len(external_factors.get('eventos_detectados', []))}",
-                f"distancia_{distance_km:.1f}km",  # ✅ AGREGAR DISTANCIA
+                f"distancia_{distance_km:.1f}km",
                 'calculo_dinamico'
             ]
         }
@@ -1137,10 +1257,12 @@ class FEEPredictionService:
         return peso_unitario * cantidad
 
     def _rank_candidates_dynamic(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """🏆 Rankea candidatos dinámicamente - CORREGIDO"""
+        """🏆 Rankea candidatos con logging explicativo detallado"""
 
         if not candidates:
             return []
+
+        logger.info(f"🏆 Iniciando ranking de {len(candidates)} candidatos...")
 
         # Normalizar métricas
         tiempos = [c['tiempo_total_horas'] for c in candidates]
@@ -1151,7 +1273,12 @@ class FEEPredictionService:
         min_costo, max_costo = min(costos), max(costos)
         min_distancia, max_distancia = min(distancias), max(distancias)
 
-        for candidate in candidates:
+        logger.info(f"📊 Rangos de métricas:")
+        logger.info(f"   ⏱️ Tiempo: {min_tiempo:.1f}h - {max_tiempo:.1f}h")
+        logger.info(f"   💰 Costo: ${min_costo:.0f} - ${max_costo:.0f}")
+        logger.info(f"   📏 Distancia: {min_distancia:.1f}km - {max_distancia:.1f}km")
+
+        for i, candidate in enumerate(candidates, 1):
             # Scores normalizados (0-1)
             score_tiempo = 1 - (candidate['tiempo_total_horas'] - min_tiempo) / max(1, max_tiempo - min_tiempo)
             score_costo = 1 - (candidate['costo_total_mxn'] - min_costo) / max(1, max_costo - min_costo)
@@ -1174,15 +1301,11 @@ class FEEPredictionService:
                     weights['distancia'] * score_distancia
             )
 
-            # 🔴 PROBLEMA: Bonus puede exceder 1.0
-            # if candidate['tipo_ruta'] == 'directa':
-            #     score_combinado *= 1.1  # ❌ Puede dar 1.0184
-
-            # ✅ SOLUCIÓN 1: Bonus aditivo controlado
+            # Bonus controlado para rutas directas
             if candidate['tipo_ruta'] == 'directa':
                 score_combinado += 0.05  # Bonus aditivo pequeño
 
-            # ✅ SOLUCIÓN 2: Normalizar SIEMPRE a máximo 1.0
+            # Normalizar SIEMPRE a máximo 1.0
             score_combinado = min(1.0, score_combinado)
 
             candidate['score_lightgbm'] = round(score_combinado, 4)
@@ -1193,14 +1316,51 @@ class FEEPredictionService:
                 'probabilidad': round(score_probabilidad, 3)
             }
 
+            # ✅ LOGGING DETALLADO: Evaluación de cada candidato
+            origen_name = candidate.get('origen_principal', f"Candidato {i}")
+            logger.info(f"📊 Evaluando: {origen_name}")
+            logger.info(f"   🔢 Scores individuales:")
+            logger.info(f"      → Tiempo: {score_tiempo:.3f} (peso: {weights['tiempo']})")
+            logger.info(f"      → Costo: {score_costo:.3f} (peso: {weights['costo']})")
+            logger.info(f"      → Distancia: {score_distancia:.3f} (peso: {weights['distancia']})")
+            logger.info(f"      → Probabilidad: {score_probabilidad:.3f} (peso: {weights['probabilidad']})")
+            logger.info(f"   🎯 Score final: {score_combinado:.4f}")
+            logger.info(
+                f"   💡 Ventajas: {candidate['tipo_ruta']}, {candidate['tiempo_total_horas']:.1f}h, ${candidate['costo_total_mxn']:.0f}")
+
         # Ordenar por score
         ranked = sorted(candidates, key=lambda x: x['score_lightgbm'], reverse=True)
 
-        logger.info("🏆 Ranking de candidatos:")
-        for i, candidate in enumerate(ranked):
-            logger.info(f"  {i + 1}. {candidate['tipo_ruta']}: score={candidate['score_lightgbm']:.3f} "
-                        f"(${candidate['costo_total_mxn']:.0f}, {candidate['tiempo_total_horas']:.1f}h, "
-                        f"{candidate['probabilidad_cumplimiento']:.1%})")
+        logger.info("🏆 RANKING FINAL:")
+        logger.info("   Pos | Tienda/Ruta              | Score  | Tiempo | Costo  | Tipo")
+        logger.info("   ----|--------------------------|--------|--------|--------|------------")
+
+        for i, candidate in enumerate(ranked, 1):
+            origen_name = candidate.get('origen_principal', f"Ruta {i}")[:20].ljust(20)
+            score = candidate['score_lightgbm']
+            tiempo = candidate['tiempo_total_horas']
+            costo = candidate['costo_total_mxn']
+            tipo = candidate['tipo_ruta'][:10]
+            prob = candidate['probabilidad_cumplimiento']
+
+            logger.info(f"   {i:2d}. | {origen_name} | {score:.3f} | {tiempo:5.1f}h | ${costo:6.0f} | {tipo}")
+
+            if i == 1:
+                # ✅ LOGGING: Explicar por qué ganó el primero
+                logger.info(f"   🎯 GANADOR: {candidate.get('origen_principal', 'N/A')}")
+                logger.info(f"      → Razones principales:")
+
+                if score >= 0.9:
+                    logger.info(f"      → Score excelente ({score:.3f}) - Óptimo en múltiples métricas")
+                elif candidate['tipo_ruta'] == 'directa':
+                    logger.info(f"      → Ruta directa - Sin transbordos ni CEDIS intermedio")
+
+                if tiempo <= min(tiempos) * 1.1:
+                    logger.info(f"      → Tiempo competitivo ({tiempo:.1f}h)")
+                if costo <= min(costos) * 1.2:
+                    logger.info(f"      → Costo eficiente (${costo:.0f})")
+                if prob >= 0.8:
+                    logger.info(f"      → Alta confiabilidad ({prob:.1%})")
 
         return ranked
 
@@ -1790,20 +1950,25 @@ class FEEPredictionService:
         }
 
     async def _find_optimal_cedis_real(self, origen_store: Dict[str, Any], codigo_postal: str) -> Dict[str, Any]:
-        """🏭 Encuentra CEDIS óptimo REAL usando datos del CSV"""
+        """🏭 Encuentra CEDIS óptimo REAL con logging detallado"""
 
         cedis_df = self.repos.data_manager.get_data('cedis')
         cp_info = self.repos.store._get_postal_info(codigo_postal)
         estado_destino = cp_info.get('estado_alcaldia', '').split()[0]  # Primer palabra
 
-        logger.info(f"🏭 Buscando CEDIS óptimo para: {origen_store['tienda_id']} → {codigo_postal} ({estado_destino})")
+        logger.info(f"🏭 Análisis de CEDIS para ruteo complejo:")
+        logger.info(f"   📍 Origen: {origen_store['nombre_tienda']} ({origen_store['tienda_id']})")
+        logger.info(f"   📍 Destino: CP {codigo_postal} ({estado_destino})")
 
         cedis_candidates = []
+
+        logger.info(f"🔍 Evaluando {cedis_df.height} CEDIS disponibles...")
 
         for cedis in cedis_df.to_dicts():
             # 1. Verificar cobertura del estado destino
             cobertura = cedis.get('cobertura_estados', '')
             if not ('Nacional' in cobertura or estado_destino in cobertura):
+                logger.info(f"   ❌ {cedis['nombre_cedis']}: No cubre {estado_destino}")
                 continue
 
             # 2. Corregir coordenadas si están corruptas
@@ -1836,6 +2001,15 @@ class FEEPredictionService:
             cobertura_bonus = 0.8 if estado_destino in cobertura else 1.0
             score = tiempo_total * cobertura_bonus
 
+            # ✅ LOGGING DETALLADO: Evaluación de cada CEDIS
+            logger.info(f"   📊 {cedis['nombre_cedis']}:")
+            logger.info(f"      → Cobertura: {cobertura}")
+            logger.info(f"      → {origen_store['nombre_tienda']} → CEDIS: {dist_origen_cedis:.1f}km")
+            logger.info(f"      → CEDIS → {estado_destino}: {dist_cedis_destino:.1f}km")
+            logger.info(f"      → Distancia total: {distancia_total:.1f}km")
+            logger.info(f"      → Tiempo procesamiento: {tiempo_proc_num:.1f}h")
+            logger.info(f"      → Score final: {score:.2f} {'✅' if estado_destino in cobertura else '⚠️'}")
+
             cedis_candidates.append({
                 **cedis,
                 'latitud_corregida': cedis_lat,
@@ -1849,16 +2023,27 @@ class FEEPredictionService:
             })
 
         if not cedis_candidates:
-            logger.error(f"❌ No se encontró CEDIS para {estado_destino}")
+            logger.error(f"❌ No se encontró ningún CEDIS disponible para {estado_destino}")
             return None
 
         # Ordenar por score (menor es mejor)
         cedis_candidates.sort(key=lambda x: x['score'])
+
+        # ✅ LOGGING: Ranking de CEDIS
+        logger.info(f"🏆 Ranking de CEDIS (mejores 3):")
+        for i, cedis in enumerate(cedis_candidates[:3], 1):
+            logger.info(f"   {i}. {cedis['nombre_cedis']}")
+            logger.info(f"      → Score: {cedis['score']:.2f}")
+            logger.info(f"      → Distancia total: {cedis['distancia_total']:.1f}km")
+            logger.info(f"      → Cobertura específica: {'Sí' if cedis['cobertura_match'] else 'No'}")
+
         best_cedis = cedis_candidates[0]
 
-        logger.info(f"✅ CEDIS seleccionado: {best_cedis['nombre_cedis']} "
-                    f"(dist_total: {best_cedis['distancia_total']:.1f}km, "
-                    f"proc_time: {best_cedis['tiempo_procesamiento_num']}h)")
+        logger.info(f"✅ CEDIS SELECCIONADO: {best_cedis['nombre_cedis']}")
+        logger.info(f"   🎯 Razón: Menor score total ({best_cedis['score']:.2f})")
+        logger.info(f"   📏 Distancia combinada: {best_cedis['distancia_total']:.1f}km")
+        logger.info(f"   ⏱️ Tiempo procesamiento: {best_cedis['tiempo_procesamiento_num']:.1f}h")
+        logger.info(f"   🌍 Cobertura {estado_destino}: {'Directa' if best_cedis['cobertura_match'] else 'Nacional'}")
 
         return best_cedis
 
