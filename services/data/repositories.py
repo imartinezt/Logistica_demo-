@@ -1,9 +1,10 @@
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any
+
 import polars as pl
-from config.settings import settings
+
 from utils.logger import logger
 
 
@@ -55,14 +56,14 @@ class DataManager:
             if key == 'tiendas':
                 # Corregir coordenadas corruptas AUTOMÁTICAMENTE
                 df = df.with_columns([
-                    pl.col('latitud').map_elements(self._fix_lat).alias('latitud'),
+                    pl.col('latitud').map_elements(self._fix_lat, return_dtype=pl.Float64),
                     pl.col('longitud').map_elements(self._fix_lon).alias('longitud')
                 ])
 
             elif key == 'cedis':
                 # Corregir coordenadas CEDIS también
                 df = df.with_columns([
-                    pl.col('latitud').map_elements(self._fix_lat).alias('latitud'),
+                    pl.col('latitud').map_elements(self._fix_lat, return_dtype=pl.Float64),
                     pl.col('longitud').map_elements(self._fix_lon).alias('longitud')
                 ])
 
