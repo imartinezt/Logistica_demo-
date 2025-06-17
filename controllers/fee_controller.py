@@ -1,4 +1,5 @@
 import time
+from typing import Dict, Any
 
 from fastapi import APIRouter, HTTPException, Depends, status
 
@@ -27,14 +28,12 @@ def get_fee_service() -> FEEPredictionService:
     return _fee_service
 
 
-@router.post("/fee/predict", response_model=PredictionResponse)
+@router.post("/fee/predict", response_model=Dict[str, Any])  # Cambiar tipo de respuesta
 async def predict_delivery_fee(
         request: PredictionRequest,
         service: FEEPredictionService = Depends(get_fee_service)
 ):
-    """
-    🎯 PREDICCIÓN INTELIGENTE FEE - MOTOR HÍBRIDO LightGBM + Gemini
-    """
+    """🎯 PREDICCIÓN INTELIGENTE FEE - RESPUESTA SIMPLIFICADA CON DATOS CSV REALES"""
 
     start_time = time.time()
 
@@ -46,16 +45,17 @@ async def predict_delivery_fee(
             cantidad=request.cantidad
         )
 
+        # Obtener respuesta simplificada
         resultado = await service.predict_fee(request)
         processing_time = (time.time() - start_time) * 1000
 
         logger.info(
             "✅ Predicción completada",
             processing_time_ms=processing_time,
-            fecha_entrega=resultado.fecha_entrega_estimada.isoformat(),
-            tipo_entrega=resultado.tipo_entrega.value,
-            costo=resultado.costo_envio_mxn,
-            probabilidad=resultado.probabilidad_cumplimiento
+            fecha_entrega=resultado['resultado_final']['fecha_entrega_estimada'],
+            tipo_entrega=resultado['resultado_final']['tipo_entrega'],
+            costo=resultado['resultado_final']['costo_mxn'],
+            probabilidad=resultado['resultado_final']['probabilidad_exito']
         )
 
         return resultado

@@ -1,5 +1,5 @@
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
@@ -659,78 +659,368 @@ class OptimizedStockRepository:
 
         return ", ".join(reasons) if reasons else "Mejor opción disponible"
 
+
+# REEMPLAZAR SOLO LA CLASE OptimizedExternalFactorsRepository en tu repositories.py
+
 class OptimizedExternalFactorsRepository:
-    """🌤️ Repositorio de factores externos optimizado"""
+    """🌤️ Repositorio de factores externos optimizado - MEJORADO EVENTOS"""
 
     def __init__(self, data_manager: DataManager):
         self.data_manager = data_manager
 
     def get_factors_for_date_and_cp(self, fecha: datetime, codigo_postal: str) -> Dict[str, Any]:
-        """📅 Obtiene factores externos por fecha y CP"""
-        df = self.data_manager.get_data('factores_externos')
-        fecha_str = fecha.date().isoformat()
+        """🎯 Obtiene factores externos para fecha y CP específicos - LÓGICA MEJORADA"""
 
-        # Buscar por fecha exacta
+        fecha_str = fecha.date().isoformat()
+        df = self.data_manager.get_data('factores_externos')
+
+        # 1. Buscar fecha exacta primero
         exact_match = df.filter(pl.col('fecha') == fecha_str)
 
         if exact_match.height > 0:
-            factors = exact_match.to_dicts()[0]
-            logger.info(f"📅 Factores REALES encontrados para {fecha_str}")
-            return self._process_factors(factors, fecha, codigo_postal)
+            result = exact_match.to_dicts()[0]
+            logger.info(f"📅 Factores encontrados para fecha exacta: {fecha_str}")
+            return self._process_factors(result, fecha, codigo_postal)
 
-        # Buscar fechas cercanas
-        for delta in range(1, 4):
-            for direction in [-1, 1]:
-                check_date = fecha + timedelta(days=delta * direction)
-                check_str = check_date.date().isoformat()
+        # 2. Buscar fechas cercanas con LÓGICA INTELIGENTE
+        return self._get_intelligent_factors(fecha, codigo_postal, df)
 
-                nearby_match = df.filter(pl.col('fecha') == check_str)
-                if nearby_match.height > 0:
-                    factors = nearby_match.to_dicts()[0]
-                    logger.info(f"📅 Usando factores de fecha cercana: {check_str}")
-                    return self._process_factors(factors, fecha, codigo_postal)
+    def _get_intelligent_factors(self, fecha: datetime, codigo_postal: str, df: pl.DataFrame) -> Dict[str, Any]:
+        """🧠 Obtiene factores con lógica inteligente para eventos"""
 
-        # Generar factores automáticos
-        logger.info(f"🤖 Generando factores automáticos para {fecha_str}")
-        return self._generate_factors(fecha, codigo_postal)
+        fecha_target = fecha.date()
 
-    def _process_factors(self, factors: Dict[str, Any], fecha: datetime, cp: str) -> Dict[str, Any]:
-        """🔄 Procesa factores del CSV"""
-
-        # Extraer factor de demanda
-        factor_demanda_raw = factors.get('factor_demanda', '1.0')
-        if isinstance(factor_demanda_raw, str) and '/' in factor_demanda_raw:
+        # Convertir todas las fechas del CSV para comparación
+        eventos_disponibles = []
+        for row in df.to_dicts():
             try:
-                num, den = map(float, factor_demanda_raw.split('/'))
-                factor_demanda = num / den
+                fecha_csv = datetime.strptime(row['fecha'], '%Y-%m-%d').date()
+                dias_diferencia = (fecha_target - fecha_csv).days
+
+                eventos_disponibles.append({
+                    'fecha_csv': fecha_csv,
+                    'dias_diferencia': dias_diferencia,
+                    'data': row
+                })
             except:
-                factor_demanda = 1.0
-        else:
-            factor_demanda = float(factor_demanda_raw)
+                continue
+
+        if not eventos_disponibles:
+            logger.warning(f"⚠️ No se encontraron eventos válidos, usando factores estacionales")
+            return self._calculate_seasonal_factors(fecha, codigo_postal)
+
+        # Ordenar por cercanía
+        eventos_disponibles.sort(key=lambda x: abs(x['dias_diferencia']))
+
+        # NUEVA LÓGICA: Solo usar eventos si son válidos temporalmente
+        for evento in eventos_disponibles:
+            dias_diff = evento['dias_diferencia']
+            evento_data = evento['data']
+            evento_nombre = evento_data.get('evento_detectado', 'Normal')
+
+            # ✅ REGLAS INTELIGENTES POR TIPO DE EVENTO
+            if self._is_event_still_valid(evento_nombre, dias_diff, fecha_target):
+                fecha_csv = evento['fecha_csv']
+                logger.info(f"📅 Usando evento válido: {evento_nombre} de {fecha_csv} (diferencia: {dias_diff} días)")
+                return self._process_factors(evento_data, fecha, codigo_postal)
+
+        # Si no encuentra eventos válidos, usar factores estacionales
+        logger.info(f"📅 No hay eventos válidos cerca de {fecha_target}, calculando factores estacionales")
+        return self._calculate_seasonal_factors(fecha, codigo_postal)
+
+    def _is_event_still_valid(self, evento_nombre: str, dias_diferencia: int, fecha_target: date) -> bool:
+        """✅ Determina si un evento sigue siendo válido según su tipo y tiempo transcurrido"""
+
+        # Eventos FUTUROS - solo válidos si son eventos de preparación/anticipación
+        if dias_diferencia < 0:
+            # Eventos que requieren preparación anticipada (máximo 3 días antes)
+            eventos_anticipacion = [
+                'Buen_Fin', 'Black_Friday', 'Cyber_Monday', 'Hot_Sale',
+                'Navidad', 'Nochebuena', 'Semana_Santa'
+            ]
+
+            for evento_prep in eventos_anticipacion:
+                if evento_prep in evento_nombre and abs(dias_diferencia) <= 3:
+                    return True
+
+            # Eventos estacionales NO deben aplicarse antes de tiempo
+            eventos_estacionales = [
+                'Inicio_Verano', 'Inicio_Invierno', 'Inicio_Primavera', 'Inicio_Otoño'
+            ]
+
+            for evento_estacional in eventos_estacionales:
+                if evento_estacional in evento_nombre:
+                    return False  # No aplicar eventos estacionales futuros
+
+            return False  # Por defecto, no usar eventos futuros
+
+        # Para eventos PASADOS, aplicar reglas MÁS ESTRICTAS
+        if dias_diferencia > 0:
+
+            # Eventos de un solo día - válidos solo el MISMO DÍA
+            eventos_un_dia = [
+                'Dia_Padre', 'Dia_Madres', 'San_Valentin', 'Dia_Mujer_8M',
+                'Dia_Trabajo', 'Independencia_Mexico', 'Dia_Muertos', 'Halloween',
+                'Navidad', 'Nochebuena', 'Año_Nuevo', 'Dia_Reyes'
+            ]
+
+            for evento_corto in eventos_un_dia:
+                if evento_corto in evento_nombre and dias_diferencia == 0:
+                    return True
+
+            # Eventos de temporada - válidos más tiempo
+            eventos_temporada = [
+                'Hot_Sale', 'Buen_Fin', 'Black_Friday', 'Cyber_Monday',
+                'Semana_Santa', 'Posadas', 'Temporada_Lluvias'
+            ]
+
+            for evento_largo in eventos_temporada:
+                if evento_largo in evento_nombre and dias_diferencia <= 5:
+                    return True
+
+            # Eventos climáticos/estacionales - válidos hasta 10 días
+            eventos_climaticos = [
+                'Inicio_Primavera', 'Inicio_Verano', 'Inicio_Otoño', 'Inicio_Invierno',
+                'Temporada_Huracanes', 'Fin_Temporada_Huracanes'
+            ]
+
+            for evento_clima in eventos_climaticos:
+                if evento_clima in evento_nombre and dias_diferencia <= 10:
+                    return True
+
+        return False
+
+    def _calculate_seasonal_factors(self, fecha: datetime, codigo_postal: str) -> Dict[str, Any]:
+        """🌤️ Calcula factores basados en época del año cuando no hay eventos específicos"""
+
+        mes = fecha.month
+        dia = fecha.day
+
+        # Determinar época y condiciones base
+        if mes in [12, 1, 2]:  # Invierno
+            epoca = "invierno"
+            clima_base = "Invierno_Frio"
+            factor_demanda_base = 1.0
+            trafico_base = "Moderado"
+            criticidad_base = "Normal"
+
+        elif mes in [3, 4, 5]:  # Primavera
+            epoca = "primavera"
+            clima_base = "Primavera_Templado"
+            factor_demanda_base = 1.1
+            trafico_base = "Moderado"
+            criticidad_base = "Normal"
+
+        elif mes in [6, 7, 8]:  # Verano
+            epoca = "verano"
+            clima_base = "Verano_Lluvioso" if mes >= 6 else "Verano_Caluroso"
+            factor_demanda_base = 1.2
+            trafico_base = "Alto" if mes == 7 else "Moderado"  # Julio más tráfico por vacaciones
+            criticidad_base = "Media"
+
+        else:  # Otoño (9, 10, 11)
+            epoca = "otoño"
+            clima_base = "Otoño_Templado"
+            factor_demanda_base = 1.0
+            trafico_base = "Moderado"
+            criticidad_base = "Normal"
+
+        # Detectar efectos residuales de eventos conocidos
+        evento_calculado = "Normal"
+
+        # Efectos post-eventos específicos MÁS REALISTAS
+        if mes == 6:
+            if dia == 16:  # Solo 1 día después del Día del Padre
+                evento_calculado = "Post_Dia_Padre"
+                factor_demanda_base = 1.05  # Efecto mínimo
+                criticidad_base = "Baja"
+            elif 17 <= dia <= 19:  # 2-4 días después - casi normal
+                evento_calculado = "Normal"
+                factor_demanda_base = 1.0
+
+        elif mes == 5:
+            if dia == 11:  # Solo 1 día después del Día de las Madres
+                evento_calculado = "Post_Dia_Madres"
+                factor_demanda_base = 1.1
+                criticidad_base = "Baja"
+            elif 12 <= dia <= 15:  # Ya casi normal
+                evento_calculado = "Normal"
+                factor_demanda_base = 1.0
+
+        elif mes == 2:
+            if dia == 15:  # Solo el día después de San Valentín
+                evento_calculado = "Post_San_Valentin"
+                factor_demanda_base = 1.02
+            elif dia >= 16:  # Ya normal
+                evento_calculado = "Normal"
+                factor_demanda_base = 1.0
+
+        elif mes == 12:
+            if 26 <= dia <= 31:  # Post Navidad
+                evento_calculado = "Post_Navidad"
+                factor_demanda_base = 0.8  # Baja demanda post navidad
+                trafico_base = "Bajo"
+                criticidad_base = "Baja"
+
+        elif mes == 1:
+            if 2 <= dia <= 10:  # Post Reyes
+                evento_calculado = "Post_Reyes"
+                factor_demanda_base = 0.9
+
+        elif mes == 11:
+            if 18 <= dia <= 25:  # Post Buen Fin
+                evento_calculado = "Post_Buen_Fin"
+                factor_demanda_base = 1.2  # Aún hay demanda residual
+
+        # Ajustes por época específica sin eventos
+        elif mes == 7 and 15 <= dia <= 31:  # Mitad de verano
+            evento_calculado = "Temporada_Vacaciones_Verano"
+            factor_demanda_base = 1.3
+            trafico_base = "Alto"
+
+        elif mes == 8 and 1 <= dia <= 31:  # Regreso a clases
+            evento_calculado = "Regreso_Clases"
+            factor_demanda_base = 1.4
+            trafico_base = "Muy_Alto"
+            criticidad_base = "Alta"
+
+        logger.info(f"🌤️ Calculando factores estacionales para {epoca}: {evento_calculado}")
+
+        # Obtener info del CP para zona de seguridad
+        cp_info = self._get_cp_info_for_factors(codigo_postal)
 
         # Calcular impactos
-        impacto_tiempo = self._calculate_time_impact(factor_demanda, factors)
-        impacto_costo = self._calculate_cost_impact(factor_demanda, factors)
+        impacto_tiempo = self._calculate_time_impact_from_demand(factor_demanda_base, trafico_base)
+        impacto_costo = self._calculate_cost_impact_from_demand(factor_demanda_base, evento_calculado)
 
-        result = {
-            'evento_detectado': factors.get('evento_detectado', 'Normal'),
-            'factor_demanda': factor_demanda,
-            'condicion_clima': factors.get('condicion_clima', 'Templado'),
-            'trafico_nivel': factors.get('trafico_nivel', 'Moderado'),
-            'criticidad_logistica': factors.get('criticidad_logistica', 'Normal'),
+        return {
+            'evento_detectado': evento_calculado,
+            'factor_demanda': factor_demanda_base,
+            'condicion_clima': clima_base,
+            'trafico_nivel': trafico_base,
+            'criticidad_logistica': criticidad_base,
             'impacto_tiempo_extra_horas': impacto_tiempo,
             'impacto_costo_extra_pct': impacto_costo,
+            'rango_cp_afectado': "00000-99999",
+            'zona_seguridad': cp_info.get('zona_seguridad', 'Verde'),
+            'es_temporada_alta': factor_demanda_base > 1.5,
+            'es_temporada_critica': factor_demanda_base > 2.5,
+            'fuente_datos': f'calculado_estacional_{epoca}',
+            'observaciones_clima_regional': f'Factores calculados para {epoca} - {evento_calculado}'
+        }
+
+    def _calculate_time_impact_from_demand(self, factor_demanda: float, trafico_nivel: str) -> float:
+        """⏱️ Calcula impacto en tiempo desde factor de demanda"""
+        base_impact = max(0, (factor_demanda - 1.0) * 2.0)
+
+        # Ajuste por tráfico
+        trafico_multiplier = {
+            'Bajo': 0.5,
+            'Moderado': 1.0,
+            'Alto': 1.5,
+            'Muy_Alto': 2.0
+        }.get(trafico_nivel, 1.0)
+
+        final_impact = base_impact * trafico_multiplier
+        return round(min(8.0, final_impact), 1)
+
+    def _calculate_cost_impact_from_demand(self, factor_demanda: float, evento: str) -> float:
+        """💰 Calcula impacto en costo desde factor de demanda"""
+        base_impact = max(0, (factor_demanda - 1.0) * 15)
+
+        # Eventos específicos que incrementan costos
+        eventos_premium = ['Post_Navidad', 'Post_Buen_Fin', 'Regreso_Clases']
+        if any(premium in evento for premium in eventos_premium):
+            base_impact += 10.0
+
+        return round(min(50.0, base_impact), 1)
+
+    def _get_cp_info_for_factors(self, codigo_postal: str) -> Dict[str, Any]:
+        """📍 Obtiene información del CP para factores externos"""
+        try:
+            cp_df = self.data_manager.get_data('codigos_postales')
+            cp_int = int(codigo_postal)
+
+            for row in cp_df.to_dicts():
+                rango_cp = row.get('rango_cp', '')
+                if '-' in rango_cp:
+                    try:
+                        inicio, fin = map(int, rango_cp.split('-'))
+                        if inicio <= cp_int <= fin:
+                            return row
+                    except ValueError:
+                        continue
+
+            # Fallback
+            return {'zona_seguridad': 'Verde', 'cobertura_liverpool': True}
+        except:
+            return {'zona_seguridad': 'Verde', 'cobertura_liverpool': True}
+
+    def _process_factors(self, raw_data: Dict[str, Any], fecha: datetime, codigo_postal: str) -> Dict[str, Any]:
+        """🔄 Procesa datos crudos del CSV a formato estándar - CORREGIDO"""
+
+        # ✅ CORRECCIÓN: Limpiar factor_demanda que puede venir como string "1/08/2025"
+        factor_demanda_raw = raw_data.get('factor_demanda', 1.0)
+
+        if isinstance(factor_demanda_raw, str):
+            if '/' in factor_demanda_raw:
+                # Es una fecha mal formateada como "1/08/2025", extraer el factor real
+                # Basándome en el patrón: "1/08/2025" debería ser 1.8
+                try:
+                    partes = factor_demanda_raw.split('/')
+                    if len(partes) >= 2:
+                        # Tomar primer número como entero y segundo como decimal
+                        entero = int(partes[0])
+                        decimal = int(partes[1][:2])  # Tomar solo primeros 2 dígitos del mes
+                        factor_demanda = float(f"{entero}.{decimal:02d}")
+                    else:
+                        factor_demanda = 1.0
+                except Exception as e:
+                    logger.warning(f"⚠️ Error procesando factor_demanda: {factor_demanda_raw}, usando 1.0")
+                    factor_demanda = 1.0
+            else:
+                # String normal, convertir a float
+                try:
+                    factor_demanda = float(factor_demanda_raw)
+                except:
+                    factor_demanda = 1.0
+        else:
+            # Ya es número
+            try:
+                factor_demanda = float(factor_demanda_raw)
+            except:
+                factor_demanda = 1.0
+
+        # Obtener info del CP para zona de seguridad
+        cp_info = self._get_cp_info_for_factors(codigo_postal)
+
+        # Calcular impactos usando métodos existentes (mantener compatibilidad)
+        impacto_tiempo = self._calculate_time_impact(factor_demanda, raw_data)
+        impacto_costo = self._calculate_cost_impact(factor_demanda, raw_data)
+
+        result = {
+            'evento_detectado': raw_data.get('evento_detectado', 'Normal'),
+            'factor_demanda': factor_demanda,
+            'condicion_clima': raw_data.get('condicion_clima', 'Templado'),
+            'trafico_nivel': raw_data.get('trafico_nivel', 'Moderado'),
+            'criticidad_logistica': raw_data.get('criticidad_logistica', 'Normal'),
+            'impacto_tiempo_extra_horas': impacto_tiempo,
+            'impacto_costo_extra_pct': impacto_costo,
+            'rango_cp_afectado': raw_data.get('rango_cp_afectado', '00000-99999'),
+            'zona_seguridad': cp_info.get('zona_seguridad', 'Verde'),
             'es_temporada_alta': factor_demanda > 1.8,
             'es_temporada_critica': factor_demanda > 2.5,
-            'fuente_datos': 'CSV_real'
+            'fuente_datos': 'CSV_directo',
+            'observaciones_clima_regional': raw_data.get('observaciones_clima_regional', '')
         }
 
         logger.info(
             f"🌤️ Factores procesados: demanda={factor_demanda:.2f}, tiempo_extra={impacto_tiempo}h, costo_extra={impacto_costo}%")
         return result
 
+    # Mantener métodos existentes para compatibilidad
     def _calculate_time_impact(self, factor_demanda: float, factors: Dict[str, Any]) -> float:
-        """⏱️ Calcula impacto en tiempo"""
+        """⏱️ Calcula impacto en tiempo (método original)"""
         base_impact = max(0, (factor_demanda - 1.0) * 2.0)
 
         # Eventos críticos
@@ -741,7 +1031,7 @@ class OptimizedExternalFactorsRepository:
         return round(min(8.0, base_impact), 1)
 
     def _calculate_cost_impact(self, factor_demanda: float, factors: Dict[str, Any]) -> float:
-        """💰 Calcula impacto en costo"""
+        """💰 Calcula impacto en costo (método original)"""
         base_impact = max(0, (factor_demanda - 1.0) * 15)
 
         # Eventos premium
@@ -752,9 +1042,8 @@ class OptimizedExternalFactorsRepository:
         return round(min(50.0, base_impact), 1)
 
     def _generate_factors(self, fecha: datetime, cp: str) -> Dict[str, Any]:
-        """🤖 Genera factores automáticos"""
-        from utils.temporal_detector import TemporalFactorDetector
-        return TemporalFactorDetector.detect_comprehensive_factors(fecha, cp)
+        """🤖 Genera factores automáticos (mantener para compatibilidad)"""
+        return self._calculate_seasonal_factors(fecha, cp)
 
 
 class OptimizedFleetRepository:

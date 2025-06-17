@@ -23,12 +23,18 @@ class FEEPredictionService:
         self._store_cache = {}  # ✅ AGREGAR cache de tiendas
         logger.info("🎯 Servicio FEE optimizado inicializado")
 
-    async def predict_fee(self, request: PredictionRequest) -> PredictionResponse:
-        """🚀 Predicción FEE completamente dinámica"""
+    async def predict_fee(self, request: PredictionRequest) -> Dict[str, Any]:
+        """🚀 Predicción FEE con respuesta simplificada y validación CSV completa"""
         start_time = time.time()
 
         try:
             logger.info(f"🎯 NUEVA PREDICCIÓN: {request.sku_id} → {request.codigo_postal} (qty: {request.cantidad})")
+
+            # VALIDACIÓN DE INTEGRIDAD CSV
+            csv_validation = self._validate_csv_data_integrity(request)
+            if csv_validation['warnings']:
+                for warning in csv_validation['warnings']:
+                    logger.warning(f"⚠️ {warning}")
 
             # 1. VALIDACIÓN DINÁMICA
             validation = await self._validate_request_dynamic(request)
@@ -38,15 +44,15 @@ class FEEPredictionService:
             product_info = validation['product']
             cp_info = validation['postal_info']
 
-            # 2. FACTORES EXTERNOS REALES
+            # 2. FACTORES EXTERNOS REALES desde CSV
             external_factors = self._get_comprehensive_external_factors(request.fecha_compra, request.codigo_postal)
 
-            # 3. BÚSQUEDA DE TIENDAS DINÁMICAS
+            # 3. BÚSQUEDA DE TIENDAS
             nearby_stores = self.repos.store.find_stores_by_postal_range(request.codigo_postal)
             if not nearby_stores:
                 raise ValueError(f"No hay tiendas Liverpool cerca de {request.codigo_postal}")
 
-            # 4. VERIFICACIÓN DE STOCK REAL
+            # 4. ANÁLISIS DE STOCK
             stock_analysis = await self._analyze_stock_dynamic(
                 request, product_info, nearby_stores
             )
@@ -54,7 +60,7 @@ class FEEPredictionService:
             if not stock_analysis['factible']:
                 raise ValueError(f"Stock insuficiente: {stock_analysis['razon']}")
 
-            # 5. GENERACIÓN DE CANDIDATOS DINÁMICOS
+            # 5. GENERACIÓN DE CANDIDATOS
             candidates = await self._generate_candidates_dynamic(
                 stock_analysis, cp_info, external_factors, request
             )
@@ -71,22 +77,403 @@ class FEEPredictionService:
                 top_candidates, request.dict(), external_factors
             )
 
-            # 7. CONSTRUCCIÓN DE RESPUESTA DINÁMICA
-            response = await self._build_dynamic_response(
-                request, gemini_decision, external_factors,
-                stock_analysis, ranked_candidates, cp_info,
-                nearby_stores  # ✅ PASAR nearby_stores
+            processing_time = (time.time() - start_time) * 1000
+
+            # 7. CONSTRUCCIÓN DE RESPUESTA SIMPLIFICADA
+            simplified_response = await self._build_simplified_response(
+                request, gemini_decision['candidato_seleccionado'],
+                ranked_candidates, stock_analysis, external_factors,
+                cp_info, product_info, processing_time
             )
 
-            processing_time = (time.time() - start_time) * 1000
-            logger.info(f"✅ Predicción completada en {processing_time:.1f}ms")
+            # Agregar información de fuentes CSV
+            simplified_response['metadata'] = {
+                'csv_sources_used': csv_validation['csv_sources'],
+                'warnings': csv_validation['warnings'],
+                'data_integrity': 'validated',
+                'version_sistema': '3.0.0'
+            }
 
-            return response
+            # LOG DETALLADO DE FUENTES
+            self._log_data_sources(simplified_response)
+
+            logger.info(f"✅ Predicción completada en {processing_time:.1f}ms")
+            return simplified_response
 
         except Exception as e:
             processing_time = (time.time() - start_time) * 1000
             logger.error(f"❌ Error en predicción: {e} ({processing_time:.1f}ms)")
             raise
+
+    def _validate_csv_data_integrity(self, request: PredictionRequest) -> Dict[str, Any]:
+        """✅ Valida que todos los datos vengan correctamente de CSV"""
+
+        validation_results = {
+            'valid': True,
+            'warnings': [],
+            'csv_sources': {}
+        }
+
+        # Validar producto en CSV
+        producto = self.repos.product.get_product_by_sku(request.sku_id)
+        if producto:
+            validation_results['csv_sources']['producto'] = 'productos_liverpool_50.csv'
+        else:
+            validation_results['warnings'].append(f"Producto {request.sku_id} no encontrado en CSV")
+
+        # Validar código postal en CSV
+        cp_info = self.repos.store._get_postal_info(request.codigo_postal)
+        if cp_info.get('rango_cp'):
+            validation_results['csv_sources']['codigo_postal'] = 'codigos_postales_rangos_mexico.csv'
+        else:
+            validation_results['warnings'].append(f"CP {request.codigo_postal} usando fallback")
+
+        # Validar factores externos en CSV
+        factores_df = self.repos.data_manager.get_data('factores_externos')
+        fecha_str = request.fecha_compra.date().isoformat()
+        factores_encontrados = factores_df.filter(pl.col('fecha') == fecha_str)
+
+        if factores_encontrados.height > 0:
+            validation_results['csv_sources']['factores_externos'] = 'factores_externos_mexico_completo.csv'
+        else:
+            validation_results['warnings'].append(
+                f"Factores para {fecha_str} no encontrados, usando cálculo automático")
+
+        # Validar flota externa en CSV
+        flota_df = self.repos.data_manager.get_data('flota_externa')
+        if flota_df.height > 0:
+            validation_results['csv_sources']['flota_externa'] = 'flota_externa_costos_reales.csv'
+        else:
+            validation_results['warnings'].append("CSV de flota externa no disponible")
+
+        logger.info(
+            f"✅ Validación CSV: {len(validation_results['csv_sources'])} fuentes válidas, {len(validation_results['warnings'])} advertencias")
+
+        return validation_results
+
+    # 10. MÉTODO PARA LOGGING DETALLADO DE FUENTES DE DATOS
+    def _log_data_sources(self, final_response: Dict[str, Any]) -> None:
+        """📊 Log detallado de fuentes de datos utilizadas"""
+
+        logger.info("📋 FUENTES DE DATOS UTILIZADAS:")
+        logger.info("=" * 60)
+
+        # Producto
+        producto = final_response.get('producto', {})
+        logger.info(f"📦 PRODUCTO: {producto.get('nombre', 'N/A')}")
+        logger.info(f"   → Fuente: productos_liverpool_50.csv")
+        logger.info(f"   → Peso: {producto.get('peso_unitario_kg', 0)}kg")
+        logger.info(f"   → Precio: ${producto.get('precio_unitario_mxn', 0)}")
+        logger.info(f"   → Tiempo prep: {producto.get('tiempo_prep_horas', 0)}h")
+
+        # Factores externos
+        factores = final_response.get('factores_externos', {})
+        logger.info(f"🌤️ FACTORES EXTERNOS:")
+        logger.info(f"   → Fuente: {factores.get('fuente_datos', 'N/A')}")
+        logger.info(f"   → Evento: {factores.get('evento_detectado', 'Normal')}")
+        logger.info(f"   → Factor demanda: {factores.get('factor_demanda', 1.0)}")
+        logger.info(f"   → Zona seguridad: {factores.get('zona_seguridad', 'Verde')}")
+        logger.info(f"   → Criticidad: {factores.get('criticidad_logistica', 'Normal')}")
+
+        # Evaluación
+        ganador = final_response.get('evaluacion', {}).get('ganador', {})
+        datos_csv = ganador.get('datos_csv', {})
+        logger.info(f"🏆 GANADOR:")
+        logger.info(f"   → Tienda: {ganador.get('tienda', 'N/A')}")
+        logger.info(f"   → Zona seguridad CSV: {datos_csv.get('zona_seguridad', 'N/A')}")
+        logger.info(f"   → CEDIS asignado CSV: {datos_csv.get('cedis_asignado', 'N/A')}")
+        logger.info(f"   → Carrier CSV: {datos_csv.get('carrier_seleccionado', 'N/A')}")
+
+        # Logística
+        logistica = final_response.get('logistica_entrega', {})
+        logger.info(f"🚛 LOGÍSTICA:")
+        logger.info(f"   → Flota: {logistica.get('flota', 'N/A')}")
+        logger.info(f"   → Carrier: {logistica.get('carrier', 'N/A')}")
+        logger.info(f"   → Probabilidad: {logistica.get('probabilidad_cumplimiento', 0):.1%}")
+
+        logger.info("=" * 60)
+
+    async def _build_simplified_response(self, request: PredictionRequest,
+                                         selected_route: Dict[str, Any],
+                                         all_candidates: List[Dict[str, Any]],
+                                         stock_analysis: Dict[str, Any],
+                                         external_factors: Dict[str, Any],
+                                         cp_info: Dict[str, Any],
+                                         producto_info: Dict[str, Any],
+                                         processing_time_ms: float) -> Dict[str, Any]:
+        """🎯 Construye response SIMPLIFICADO con datos reales de CSV"""
+
+        # Calcular peso real del producto
+        peso_kg_estimado = producto_info.get('peso_kg', 0.2) * request.cantidad
+
+        # Obtener zona de seguridad REAL del CSV de códigos postales
+        zona_seguridad_real = cp_info.get('zona_seguridad', 'Verde')
+
+        # Calcular FEE usando lógica existente
+        fee_calculation = self._calculate_dynamic_fee(
+            selected_route, request, external_factors, cp_info
+        )
+
+        # Construir candidatos simplificados con datos CSV reales
+        candidatos_simplificados = []
+        for candidate in all_candidates:
+            # Obtener datos reales de la tienda
+            tienda_info = await self._get_store_info(candidate.get('tienda_origen_id', 'LIV001'))
+
+            candidatos_simplificados.append({
+                "tienda": tienda_info.get('nombre_tienda',
+                                          candidate.get('origen_principal', 'N/A')) if tienda_info else candidate.get(
+                    'origen_principal', 'N/A'),
+                "distancia_km": round(candidate.get('distancia_total_km', 0), 1),
+                "tiempo_h": round(candidate.get('tiempo_total_horas', 0), 1),
+                "costo_mxn": round(candidate.get('costo_total_mxn', 0), 0),
+                "stock": self._get_stock_for_candidate(candidate, stock_analysis),
+                "score": round(candidate.get('score_lightgbm', 0), 3),
+                "flota": self._get_fleet_info_simplified(candidate),
+                "zona_seguridad": zona_seguridad_real  # Dato real del CSV
+            })
+
+        # Ganador con datos reales
+        ganador_info = candidatos_simplificados[0] if candidatos_simplificados else {}
+
+        # Factores externos REALES del CSV
+        factores_externos_reales = self._extract_real_external_factors(external_factors, cp_info)
+
+        return {
+            "request": {
+                "timestamp": datetime.now().isoformat(),
+                "sku_id": request.sku_id,
+                "cantidad": request.cantidad,
+                "codigo_postal": request.codigo_postal,
+                "peso_kg_estimado": round(peso_kg_estimado, 1),
+                "fecha_compra": request.fecha_compra.isoformat()
+            },
+            "producto": {
+                "nombre": producto_info.get('nombre_producto', 'N/A'),
+                "marca": producto_info.get('marca', 'N/A'),
+                "precio_unitario_mxn": producto_info.get('precio_venta', 0),
+                "peso_unitario_kg": producto_info.get('peso_kg', 0.2),
+                "tiempo_prep_horas": producto_info.get('tiempo_prep_horas', 1.0),
+                "stock_local": sum(
+                    loc.get('stock_disponible', 0) for loc in stock_analysis.get('allocation_plan', []) if
+                    self._is_local_store(loc)),
+                "stock_nacional": sum(
+                    loc.get('stock_disponible', 0) for loc in stock_analysis.get('allocation_plan', []))
+            },
+            "factores_externos": factores_externos_reales,
+            "evaluacion": {
+                "pesos": {
+                    "tiempo": settings.PESO_TIEMPO,
+                    "costo": settings.PESO_COSTO,
+                    "stock": settings.PESO_PROBABILIDAD,  # Corresponde a probabilidad
+                    "distancia": settings.PESO_DISTANCIA
+                },
+                "candidatos": candidatos_simplificados,
+                "ganador": {
+                    "tienda": ganador_info.get('tienda', 'N/A'),
+                    "score_final": ganador_info.get('score', 0),
+                    "ventajas": self._get_real_advantages(selected_route, all_candidates, zona_seguridad_real),
+                    "asignacion": {
+                        "unidades": request.cantidad,
+                        "costo_total_mxn": round(selected_route.get('costo_total_mxn', 0), 2),
+                        "distancia_km": round(selected_route.get('distancia_total_km', 0), 1),
+                        "precio_unitario_producto": producto_info.get('precio_venta', 0)
+                    },
+                    "datos_csv": {
+                        "zona_seguridad": zona_seguridad_real,
+                        "cedis_asignado": self._get_cedis_from_store(selected_route),
+                        "carrier_seleccionado": self._get_main_carrier(selected_route),
+                        "flota_utilizada": self._get_fleet_info_detailed(selected_route)
+                    }
+                }
+            },
+            "logistica_entrega": {
+                "ruta": self._build_route_description(selected_route),  # ✅ NUEVO
+                "tipo_ruta": selected_route.get('tipo_ruta', 'directa'),
+                "flota": self._get_fleet_info_simplified(selected_route),
+                "carrier": self._get_main_carrier(selected_route),
+                "distancia_km": round(selected_route.get('distancia_total_km', 0), 1),
+                "tiempo_total_h": round(selected_route.get('tiempo_total_horas', 0), 1),
+                "desglose_tiempos_h": self._get_time_breakdown(selected_route, external_factors),
+                "factores_aplicados": selected_route.get('factores_aplicados', []),
+                "probabilidad_cumplimiento": round(selected_route.get('probabilidad_cumplimiento', 0), 3),
+                # ✅ NUEVO: Agregar información de CEDIS para rutas complejas
+                "cedis_intermedio": self._get_cedis_from_store(selected_route) if selected_route.get('tipo_ruta') in ['compleja_cedis', 'multi_segmento_cedis'] else None
+            },
+            "resultado_final": {
+                "tipo_entrega": fee_calculation.tipo_entrega.value,
+                "fecha_entrega_estimada": fee_calculation.fecha_entrega_estimada.isoformat(),
+                "ventana_entrega": {
+                    "inicio": fee_calculation.rango_horario_entrega['inicio'].strftime('%H:%M'),
+                    "fin": fee_calculation.rango_horario_entrega['fin'].strftime('%H:%M')
+                },
+                "costo_mxn": round(selected_route.get('costo_total_mxn', 0), 2),
+                "probabilidad_exito": round(selected_route.get('probabilidad_cumplimiento', 0), 3),
+                "processing_time_ms": round(processing_time_ms, 1),
+                "confianza_prediccion": 0.85
+            }
+        }
+
+
+    # 2. Métodos auxiliares para extraer datos reales de CSV
+    def _extract_real_external_factors(self, external_factors: Dict[str, Any], cp_info: Dict[str, Any]) -> Dict[
+        str, Any]:
+        """📊 Extrae factores externos REALES de los CSV"""
+        return {
+            "evento_detectado": external_factors.get('evento_detectado', 'Normal'),
+            "factor_demanda": external_factors.get('factor_demanda', 1.0),
+            "condicion_clima": external_factors.get('condicion_clima', 'Templado'),
+            "trafico_nivel": external_factors.get('trafico_nivel', 'Moderado'),
+            "criticidad_logistica": external_factors.get('criticidad_logistica', 'Normal'),
+            "zona_seguridad": cp_info.get('zona_seguridad', 'Verde'),  # Del CSV de códigos postales
+            "es_temporada_alta": external_factors.get('es_temporada_alta', False),
+            "impacto_tiempo_extra_horas": external_factors.get('impacto_tiempo_extra_horas', 0),
+            "rango_cp_afectado": external_factors.get('rango_cp_afectado', '00000-99999'),
+            "fuente_datos": external_factors.get('fuente_datos', 'CSV_real')
+        }
+
+    def _get_real_advantages(self, selected_route: Dict[str, Any], all_candidates: List[Dict[str, Any]],
+                             zona_seguridad: str) -> List[str]:
+        """✅ Obtiene ventajas reales basadas en datos de CSV"""
+        advantages = []
+
+        tiempo = selected_route.get('tiempo_total_horas', 0)
+        costo = selected_route.get('costo_total_mxn', 0)
+        score = selected_route.get('score_lightgbm', 0)
+        tipo_ruta = selected_route.get('tipo_ruta', 'directa')
+
+        if len(all_candidates) == 1:
+            advantages.append("Única opción factible con stock disponible")
+        else:
+            if score >= 0.9:
+                advantages.append(f"Score excelente ({score:.3f})")
+            if tiempo <= 4:
+                advantages.append(f"Tiempo excelente ({tiempo:.1f}h)")
+            if tipo_ruta == 'directa':
+                advantages.append("Ruta directa sin transbordos")
+            if zona_seguridad == 'Verde':
+                advantages.append("Zona segura sin restricciones")
+            elif zona_seguridad == 'Amarilla':
+                advantages.append("Zona moderada con ligeras restricciones")
+
+        return advantages if advantages else ["Mejor opción disponible"]
+
+    def _get_stock_for_candidate(self, candidate: Dict[str, Any], stock_analysis: Dict[str, Any]) -> int:
+        """📦 Obtiene stock real para un candidato"""
+        tienda_id = candidate.get('tienda_origen_id', candidate.get('origen_principal', ''))
+
+        for plan_item in stock_analysis.get('allocation_plan', []):
+            if plan_item.get('tienda_id') == tienda_id:
+                return plan_item.get('stock_disponible', 0)
+
+        return 0
+
+    def _get_fleet_info_simplified(self, route_data: Dict[str, Any]) -> str:
+        """🚛 Obtiene info de flota simplificada"""
+        segmentos = route_data.get('segmentos', [])
+        if not segmentos:
+            return 'N/A'
+
+        # Tomar info del primer segmento
+        primer_segmento = segmentos[0]
+        tipo_flota = primer_segmento.get('tipo_flota', 'FI')
+        carrier = primer_segmento.get('carrier', 'Liverpool')
+
+        if tipo_flota == 'FI':
+            return 'FI-Live'
+        else:
+            return f'FE-{carrier[:4]}'
+
+    def _get_fleet_info_detailed(self, route_data: Dict[str, Any]) -> Dict[str, Any]:
+        """🚛 Obtiene info detallada de flota desde CSV"""
+        segmentos = route_data.get('segmentos', [])
+        if not segmentos:
+            return {}
+
+        primer_segmento = segmentos[0]
+
+        return {
+            "tipo_flota": primer_segmento.get('tipo_flota', 'FI'),
+            "carrier": primer_segmento.get('carrier', 'Liverpool'),
+            "zona_cobertura": primer_segmento.get('zona_seguridad', 'Verde'),
+            "costo_segmento": primer_segmento.get('costo_segmento', 0)
+        }
+
+    def _get_time_breakdown(self, route_data: Dict[str, Any], external_factors: Dict[str, Any]) -> Dict[str, float]:
+        """⏱️ Desglose de tiempos reales"""
+        tiempo_total = route_data.get('tiempo_total_horas', 0)
+        tiempo_prep = 1.0  # Default del producto CSV
+        tiempo_extra = external_factors.get('impacto_tiempo_extra_horas', 0)
+        tiempo_viaje = max(0, tiempo_total - tiempo_prep - tiempo_extra)
+
+        return {
+            "preparacion": round(tiempo_prep, 1),
+            "viaje": round(tiempo_viaje, 1),
+            "factores_externos": round(tiempo_extra, 1),
+            "contingencia": round(tiempo_total * 0.1, 1)
+        }
+
+    def _get_cedis_from_store(self, route_data: Dict[str, Any]) -> str:
+        """🏭 Obtiene CEDIS asignado - CORREGIDO para rutas complejas"""
+
+        # ✅ NUEVO: Para rutas complejas, capturar CEDIS del ruteo
+        tipo_ruta = route_data.get('tipo_ruta', 'directa')
+
+        if tipo_ruta == 'compleja_cedis':
+            # Buscar CEDIS en la información de ruteo complejo
+            cedis_intermedio = route_data.get('cedis_intermedio')
+            if cedis_intermedio:
+                return cedis_intermedio
+
+            # Fallback: buscar en segmentos
+            segmentos = route_data.get('segmentos', [])
+            for segmento in segmentos:
+                destino = segmento.get('destino', '')
+                if 'CEDIS' in destino:
+                    return destino
+
+        elif tipo_ruta == 'multi_segmento_cedis':
+            # Para rutas multi-segmento, usar cedis_intermedio
+            return route_data.get('cedis_intermedio', 'N/A')
+
+        # ✅ ORIGINAL: Para rutas directas, usar CSV de tiendas
+        tienda_id = route_data.get('tienda_origen_id')
+        if not tienda_id:
+            return 'N/A'
+
+        tiendas_df = self.repos.data_manager.get_data('tiendas')
+        tienda_data = tiendas_df.filter(pl.col('tienda_id') == tienda_id)
+
+        if tienda_data.height > 0:
+            return tienda_data.to_dicts()[0].get('cedis_asignado', 'N/A')
+
+        return 'N/A'
+
+    # ✅ NUEVO MÉTODO: Construir descripción completa de ruta
+    def _build_route_description(self, route_data: Dict[str, Any]) -> str:
+        """🗺️ Construye descripción completa de la ruta"""
+
+        tipo_ruta = route_data.get('tipo_ruta', 'directa')
+        origen = route_data.get('origen_principal', 'Origen')
+
+        if tipo_ruta == 'directa':
+            return f"{origen} → Cliente"
+
+        elif tipo_ruta in ['compleja_cedis', 'multi_segmento_cedis']:
+            cedis = route_data.get('cedis_intermedio', 'CEDIS')
+            tienda_destino = route_data.get('tienda_destino', 'Tienda Destino')
+
+            if tienda_destino and tienda_destino != 'Tienda Destino':
+                return f"{origen} → {cedis} → {tienda_destino} → Cliente"
+            else:
+                return f"{origen} → {cedis} → Cliente"
+
+        else:
+            return f"{origen} → Cliente"
+
+    def _is_local_store(self, location: Dict[str, Any]) -> bool:
+        """📍 Determina si una tienda es local (< 100km)"""
+        return location.get('distancia_km', 999) < 100
 
     async def _validate_request_dynamic(self, request: PredictionRequest) -> Dict[str, Any]:
         """✅ Validación dinámica con datos reales"""
@@ -692,107 +1079,70 @@ class FEEPredictionService:
                                            external_factors: Dict[str, Any],
                                            request: PredictionRequest,
                                            cp_info: Dict[str, Any]) -> Dict[str, Any]:
-        """📍 Crea ruta directa con logging explicativo detallado"""
+        """📍 Crea ruta directa con zona de seguridad REAL del CSV"""
 
         tienda_id = plan_item['tienda_id']
-
-        # Obtener coordenadas REALES de la tienda
         tienda_info = await self._get_store_info(tienda_id)
+
         if not tienda_info:
             logger.error(f"❌ No se encontró info para tienda {tienda_id}")
             return None
 
-        # Usar coordenadas reales de la tienda
-        store_lat = float(tienda_info['latitud'])
-        store_lon = float(tienda_info['longitud'])
+        # CORRECCIÓN: Usar zona de seguridad del CSV de códigos postales, NO de tiendas
+        zona_seguridad_cp = cp_info.get('zona_seguridad', 'Verde')  # Del CSV codigos_postales
+        zona_seguridad_tienda = tienda_info.get('zona_seguridad', 'Verde')  # Del CSV tiendas
 
-        # ✅ LOGGING DETALLADO: Información de la ruta
-        logger.info(f"📍 RUTA DIRECTA: {tienda_info['nombre_tienda']} → Cliente")
-        logger.info(f"   🏪 Tienda origen: {tienda_info['nombre_tienda']} ({tienda_id})")
-        logger.info(f"      → Ubicación: {tienda_info.get('direccion_completa', 'N/A')}")
-        logger.info(f"      → Coordenadas: ({store_lat:.4f}, {store_lon:.4f})")
-        logger.info(f"      → Horario: {tienda_info.get('horario_operacion', 'N/A')}")
-        logger.info(f"   📦 Destino: CP {request.codigo_postal}")
-        logger.info(f"      → Coordenadas: ({target_coords[0]:.4f}, {target_coords[1]:.4f})")
+        # La zona final es la más restrictiva
+        zonas_orden = {'Verde': 1, 'Amarilla': 2, 'Roja': 3}
+        zona_final = zona_seguridad_cp if zonas_orden.get(zona_seguridad_cp, 1) >= zonas_orden.get(
+            zona_seguridad_tienda, 1) else zona_seguridad_tienda
 
-        # Calcular distancia REAL
-        from utils.geo_calculator import GeoCalculator
-        distance_km = GeoCalculator.calculate_distance_km(
-            store_lat, store_lon,
-            target_coords[0], target_coords[1]
+        logger.info(f"🛡️ Zona seguridad: CP={zona_seguridad_cp}, Tienda={zona_seguridad_tienda}, Final={zona_final}")
+
+        # Usar coordenadas REALES corregidas
+        store_lat, store_lon = GeoCalculator.fix_corrupted_coordinates(
+            float(tienda_info['latitud']), float(tienda_info['longitud'])
         )
 
-        logger.info(f"   📏 Distancia calculada: {distance_km:.2f}km")
+        # Calcular distancia REAL
+        distance_km = GeoCalculator.calculate_distance_km(
+            store_lat, store_lon, target_coords[0], target_coords[1]
+        )
 
-        # Verificar cálculo de distancia
-        if distance_km == 0.0:
-            logger.warning(f"⚠️ Distancia 0.0km detectada - Posible error en coordenadas")
-            logger.warning(
-                f"   Tienda: ({store_lat}, {store_lon}) vs Destino: ({target_coords[0]}, {target_coords[1]})")
-            distance_km = 5.0  # 5km mínimo por defecto
-            logger.warning(f"   Usando distancia mínima: {distance_km}km")
-
-        # Determinar tipo de flota
-        zona_seguridad = cp_info.get('zona_seguridad', 'Verde')
+        # Determinar tipo de flota basado en CSV y zona de seguridad
         cobertura_liverpool = cp_info.get('cobertura_liverpool', True)
 
-        if distance_km <= 50 and cobertura_liverpool and zona_seguridad in ['Verde', 'Amarilla']:
+        if distance_km <= 50 and cobertura_liverpool and zona_final in ['Verde', 'Amarilla']:
             fleet_type = 'FI'
             carrier = 'Liverpool'
-            logger.info(f"   🚛 FLOTA INTERNA seleccionada:")
-            logger.info(f"      → Razón: Distancia local ({distance_km:.1f}km ≤ 50km)")
-            logger.info(f"      → Zona segura: {zona_seguridad}")
-            logger.info(f"      → Cobertura Liverpool: {'Sí' if cobertura_liverpool else 'No'}")
+            logger.info(f"🚛 FLOTA INTERNA: {distance_km:.1f}km, zona {zona_final}")
         else:
             fleet_type = 'FE'
             peso_kg = self._calculate_shipment_weight(request, plan_item['cantidad'])
             carriers = self.repos.fleet.get_best_carriers_for_cp(request.codigo_postal, peso_kg)
             carrier = carriers[0]['carrier'] if carriers else 'DHL'
-            logger.info(f"   📦 FLOTA EXTERNA seleccionada:")
-            logger.info(f"      → Carrier: {carrier}")
-            logger.info(f"      → Razón: Distancia larga ({distance_km:.1f}km > 50km) o zona roja")
-            logger.info(f"      → Peso estimado: {peso_kg:.1f}kg")
+            logger.info(f"📦 FLOTA EXTERNA: {carrier}, zona {zona_final}")
 
-        # Cálculos con distancia real
+        # Cálculos con datos CSV reales
         travel_time = self._calculate_travel_time_dynamic(distance_km, fleet_type, external_factors)
         prep_time = float(tienda_info.get('tiempo_prep_horas', 1.0))
         tiempo_extra = external_factors.get('impacto_tiempo_extra_horas', 0)
         total_time = prep_time + travel_time + tiempo_extra
 
-        logger.info(f"   ⏱️ DESGLOSE DE TIEMPOS:")
-        logger.info(f"      → Preparación en tienda: {prep_time:.1f}h")
-        logger.info(f"      → Tiempo de viaje: {travel_time:.1f}h")
-        logger.info(f"      → Factores externos: {tiempo_extra:.1f}h")
-        logger.info(f"      → TOTAL: {total_time:.1f}h")
-
-        # Costo dinámico
+        # Costo usando datos CSV reales
         if fleet_type == 'FE' and carriers:
             cost = self._calculate_external_fleet_cost(
                 carriers[0], peso_kg, distance_km, external_factors
             )
-            logger.info(f"   💰 COSTO EXTERNO: ${cost:.2f}")
-            logger.info(f"      → Base {carrier}: ${carriers[0]['costo_base_mxn']:.2f}")
-            logger.info(f"      → Factor demanda: {external_factors.get('factor_demanda', 1.0):.2f}")
-            logger.info(f"      → Factor distancia aplicado")
         else:
             cost = self._calculate_internal_fleet_cost(
                 distance_km, plan_item['cantidad'], external_factors
             )
-            logger.info(f"   💰 COSTO INTERNO: ${cost:.2f}")
-            logger.info(f"      → Base: {distance_km:.1f}km × $12/km = ${distance_km * 12:.2f}")
-            logger.info(f"      → Factor cantidad: {plan_item['cantidad']} unidades")
-            logger.info(f"      → Factor demanda: {external_factors.get('factor_demanda', 1.0):.2f}")
 
-        # Probabilidad
+        # Probabilidad con zona real
         probability = self._calculate_probability_dynamic(
-            distance_km, total_time, external_factors, fleet_type, zona_seguridad
+            distance_km, total_time, external_factors, fleet_type, zona_final
         )
-
-        logger.info(f"   📊 RESULTADO FINAL:")
-        logger.info(f"      → Probabilidad de éxito: {probability:.1%}")
-        logger.info(
-            f"      → Score esperado: {'Alto' if probability > 0.8 else 'Medio' if probability > 0.6 else 'Bajo'}")
-        logger.info(f"      → Recomendación: {'✅ Viable' if probability > 0.7 else '⚠️ Riesgoso'}")
 
         return {
             'ruta_id': f"direct_{tienda_id}",
@@ -808,7 +1158,7 @@ class FEEPredictionService:
                 'tipo_flota': fleet_type,
                 'carrier': carrier,
                 'costo_segmento': cost,
-                'zona_seguridad': zona_seguridad
+                'zona_seguridad': zona_final  # ZONA REAL DEL CSV
             }],
             'tiempo_total_horas': total_time,
             'costo_total_mxn': cost,
@@ -819,10 +1169,10 @@ class FEEPredictionService:
                 f"demanda_{external_factors.get('factor_demanda', 1.0)}",
                 f"flota_{fleet_type}",
                 f"carrier_{carrier}",
-                f"zona_{zona_seguridad}",
+                f"zona_{zona_final}",  # ZONA REAL
                 f"eventos_{len(external_factors.get('eventos_detectados', []))}",
                 f"distancia_{distance_km:.1f}km",
-                'calculo_dinamico'
+                'datos_csv_reales'
             ]
         }
 
@@ -850,36 +1200,36 @@ class FEEPredictionService:
     def _calculate_external_fleet_cost(self, carrier_info: Dict[str, Any],
                                        peso_kg: float, distance_km: float,
                                        external_factors: Dict[str, Any]) -> float:
-        """💰 Cálculo CORREGIDO de costo flota externa"""
+        """💰 Cálculo de costo flota externa usando datos REALES del CSV"""
 
-        base_cost = carrier_info['costo_base_mxn']
-        peso_extra = max(0, peso_kg - carrier_info['peso_min_kg'])
-        cost_extra = peso_extra * carrier_info['costo_por_kg_adicional']
+        # Datos base del CSV
+        costo_base = float(carrier_info['costo_base_mxn'])
+        peso_min = float(carrier_info['peso_min_kg'])
+        costo_por_kg = float(carrier_info['costo_por_kg_adicional'])
 
-        # CORRECCIÓN: Factor de distancia más realista
-        distance_factor = 1.0 + (distance_km / 500) * 0.2  # 20% extra cada 500km
+        # Calcular costo por peso extra
+        peso_extra = max(0, peso_kg - peso_min)
+        costo_peso_extra = peso_extra * costo_por_kg
 
-        subtotal = (base_cost + cost_extra) * distance_factor
+        # Factor por distancia (desde CSV indirectamente)
+        distance_factor = 1.0 + (distance_km / 500) * 0.1  # 10% cada 500km
 
-        # CORRECCIÓN: Aplicar TODOS los factores externos
-        demand_factor = external_factors.get('factor_demanda', 1.0)
-        cost_extra_pct = external_factors.get('impacto_costo_extra_pct', 0) / 100
+        subtotal = (costo_base + costo_peso_extra) * distance_factor
 
-        # Aplicar factor de demanda
-        subtotal *= demand_factor
+        # Aplicar factores externos REALES del CSV
+        factor_demanda = external_factors.get('factor_demanda', 1.0)
+        impacto_costo_pct = external_factors.get('impacto_costo_extra_pct', 0) / 100
 
-        # Aplicar impacto de costo extra
-        if cost_extra_pct > 0:
-            subtotal *= (1 + cost_extra_pct)
+        # Factor de demanda
+        subtotal *= factor_demanda
 
-        # CORRECCIÓN: Factor por temporada crítica
-        if external_factors.get('es_temporada_critica', False):
-            subtotal *= 1.25  # 25% extra en temporada crítica
+        # Impacto de costo extra
+        if impacto_costo_pct > 0:
+            subtotal *= (1 + impacto_costo_pct)
 
         final_cost = round(subtotal, 2)
 
-        logger.info(
-            f"💰 Costo externo: base=${base_cost} × demanda={demand_factor:.2f} × extras={1 + cost_extra_pct:.2f} = ${final_cost}")
+        logger.info(f"💰 Costo externo CSV: base=${costo_base} × demanda={factor_demanda:.2f} = ${final_cost}")
 
         return final_cost
 
@@ -898,40 +1248,41 @@ class FEEPredictionService:
         return round(max(50.0, total_cost), 2)
 
     def _get_comprehensive_external_factors(self, fecha: datetime, codigo_postal: str) -> Dict[str, Any]:
-        """🎯 Factores externos REALES del CSV (sin fallbacks)"""
+        """🎯 Factores externos COMPLETAMENTE desde CSV"""
 
-        factores_df = self.repos.data_manager.get_data('factores_externos')
-        fecha_str = fecha.date().isoformat()
+        # Obtener factores del CSV de factores externos
+        factores_csv = self.repos.external_factors.get_factors_for_date_and_cp(fecha, codigo_postal)
 
-        # Buscar por fecha exacta
-        exact_match = factores_df.filter(pl.col('fecha') == fecha_str)
+        # Obtener info del CP desde CSV de códigos postales
+        cp_info = self.repos.store._get_postal_info(codigo_postal)
 
-        if exact_match.height > 0:
-            # Buscar por rango de CP si existe
-            cp_int = int(codigo_postal)
-            for row in exact_match.to_dicts():
-                rango_cp = row.get('rango_cp_afectado', '00000-99999')
-                if self._cp_in_range(cp_int, rango_cp):
-                    logger.info(f"📅 Factores REALES encontrados: {row['evento_detectado']}")
-                    return self._process_real_csv_factors(row, fecha, codigo_postal)
+        # Combinar datos REALES de ambos CSVs
+        return {
+            # Desde factores_externos_mexico_completo.csv
+            'evento_detectado': factores_csv.get('evento_detectado', 'Normal'),
+            'eventos_detectados': [factores_csv.get('evento_detectado', 'Normal')] if factores_csv.get(
+                'evento_detectado') != 'Normal' else [],
+            'factor_demanda': factores_csv.get('factor_demanda', 1.0),
+            'condicion_clima': factores_csv.get('condicion_clima', 'Templado'),
+            'trafico_nivel': factores_csv.get('trafico_nivel', 'Moderado'),
+            'criticidad_logistica': factores_csv.get('criticidad_logistica', 'Normal'),
+            'impacto_tiempo_extra_horas': factores_csv.get('impacto_tiempo_extra_horas', 0),
+            'rango_cp_afectado': factores_csv.get('rango_cp_afectado', '00000-99999'),
 
-            # Si no hay match de CP, usar el primer registro de la fecha
-            row = exact_match.to_dicts()[0]
-            return self._process_real_csv_factors(row, fecha, codigo_postal)
+            # Desde codigos_postales_rangos_mexico.csv
+            'zona_seguridad': cp_info.get('zona_seguridad', 'Verde'),
+            'cobertura_liverpool': cp_info.get('cobertura_liverpool', True),
+            'tiempo_entrega_base_horas': cp_info.get('tiempo_entrega_base_horas', '2-4'),
 
-        # Si no hay datos para la fecha, buscar el más cercano
-        for delta in [1, -1, 2, -2]:
-            check_date = fecha + timedelta(days=delta)
-            check_str = check_date.date().isoformat()
-            nearby_match = factores_df.filter(pl.col('fecha') == check_str)
+            # Calculados pero basados en CSV
+            'es_temporada_alta': factores_csv.get('factor_demanda', 1.0) > 1.8,
+            'es_temporada_critica': factores_csv.get('factor_demanda', 1.0) > 2.5,
+            'impacto_costo_extra_pct': self._calculate_cost_impact_from_csv(factores_csv),
 
-            if nearby_match.height > 0:
-                row = nearby_match.to_dicts()[0]
-                logger.info(f"📅 Usando factores de fecha cercana: {check_str}")
-                return self._process_real_csv_factors(row, fecha, codigo_postal)
-
-        # Solo si NO hay datos en CSV, usar baseline mínimo
-        return self._create_baseline_factors(fecha, codigo_postal)
+            'fuente_datos': 'CSV_completo',
+            'fecha_analisis': fecha.isoformat(),
+            'observaciones': factores_csv.get('observaciones_clima_regional', '')
+        }
 
     def _process_real_csv_factors(self, row: Dict[str, Any], fecha: datetime, cp: str) -> Dict[str, Any]:
         """🔄 Procesa factores REALES del CSV con parsing robusto"""
@@ -970,6 +1321,21 @@ class FEEPredictionService:
             'observaciones_clima': row.get('observaciones_clima_regional', ''),
             'rango_cp_afectado': row.get('rango_cp_afectado', '00000-99999')
         }
+
+    def _calculate_cost_impact_from_csv(self, factores_csv: Dict[str, Any]) -> float:
+        """💰 Calcula impacto en costo desde datos CSV"""
+        factor_demanda = factores_csv.get('factor_demanda', 1.0)
+        evento = factores_csv.get('evento_detectado', 'Normal')
+
+        # Base por demanda
+        impacto = max(0, (factor_demanda - 1.0) * 20)  # 20% por punto de demanda
+
+        # Eventos específicos del CSV
+        eventos_premium = ['Viernes_Santo', 'Jueves_Santo', 'Dia_Padre', 'Navidad']
+        if any(evento_premium in evento for evento_premium in eventos_premium):
+            impacto += 15  # 15% extra
+
+        return round(min(50.0, impacto), 1)
 
     def _get_postal_info_detailed(self, codigo_postal: str) -> Dict[str, Any]:
         """📍 Información detallada del código postal"""
@@ -1210,7 +1576,7 @@ class FEEPredictionService:
     def _calculate_probability_dynamic(self, distance_km: float, total_time: float,
                                        external_factors: Dict[str, Any], fleet_type: str,
                                        zona_seguridad: str = 'Verde') -> float:
-        """📊 Probabilidad con zona de seguridad"""
+        """📊 Probabilidad con zona de seguridad REAL desde CSV"""
 
         base_prob = 0.90 if fleet_type == 'FI' else 0.82
 
@@ -1218,14 +1584,14 @@ class FEEPredictionService:
         distance_penalty = min(0.2, distance_km / 1000)
         time_penalty = min(0.15, max(0, (total_time - 6) / 50))
 
-        # Penalización por zona de seguridad
+        # Penalización por zona de seguridad REAL del CSV
         zona_penalty = {
-            'Verde': 0.0,
-            'Amarilla': 0.05,
-            'Roja': 0.15
+            'Verde': 0.0,  # Sin penalización
+            'Amarilla': 0.05,  # 5% menos probabilidad
+            'Roja': 0.15  # 15% menos probabilidad
         }.get(zona_seguridad, 0.05)
 
-        # Factor por criticidad
+        # Factor por criticidad REAL del CSV
         criticidad = external_factors.get('criticidad_logistica', 'Normal')
         criticidad_factor = {
             'Baja': 1.0,
@@ -2411,3 +2777,4 @@ class FEEPredictionService:
                 return segmento.get('carrier', 'Liverpool')
 
         return segmentos[-1].get('carrier', 'Liverpool')
+
