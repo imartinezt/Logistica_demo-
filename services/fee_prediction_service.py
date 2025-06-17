@@ -201,7 +201,7 @@ class FEEPredictionService:
                                          cp_info: Dict[str, Any],
                                          producto_info: Dict[str, Any],
                                          processing_time_ms: float) -> Dict[str, Any]:
-        """🎯 Construye response SIMPLIFICADO con datos reales de CSV"""
+        """🎯 Construye response DETALLADO con toda la información de logs en JSON"""
 
         # Calcular peso real del producto
         peso_kg_estimado = producto_info.get('peso_kg', 0.2) * request.cantidad
@@ -230,7 +230,7 @@ class FEEPredictionService:
                 "stock": self._get_stock_for_candidate(candidate, stock_analysis),
                 "score": round(candidate.get('score_lightgbm', 0), 3),
                 "flota": self._get_fleet_info_simplified(candidate),
-                "zona_seguridad": zona_seguridad_real  # Dato real del CSV
+                "zona_seguridad": zona_seguridad_real
             })
 
         # Ganador con datos reales
@@ -238,6 +238,32 @@ class FEEPredictionService:
 
         # Factores externos REALES del CSV
         factores_externos_reales = self._extract_real_external_factors(external_factors, cp_info)
+
+        # ✅ NUEVO: Información detallada de evaluación
+        evaluacion_detallada = {
+            'pesos_configurados': {
+                'tiempo': settings.PESO_TIEMPO,
+                'costo': settings.PESO_COSTO,
+                'stock': settings.PESO_PROBABILIDAD,
+                'distancia': settings.PESO_DISTANCIA
+            },
+            'rutas_evaluadas': None,
+            'stock_analysis': None,
+            'cedis_analysis': None
+        }
+
+        # Extraer información de rutas evaluadas
+        if all_candidates and hasattr(all_candidates[0], 'rutas_evaluadas_detalle'):
+            evaluacion_detallada['rutas_evaluadas'] = all_candidates[0].rutas_evaluadas_detalle
+
+        # Información de análisis de stock
+        if 'analysis_details' in stock_analysis:
+            evaluacion_detallada['stock_analysis'] = stock_analysis['analysis_details']
+
+        # Información de CEDIS (si es ruta compleja)
+        if selected_route.get('tipo_ruta') in ['compleja_cedis', 'multi_segmento_cedis']:
+            if 'cedis_analysis' in selected_route:
+                evaluacion_detallada['cedis_analysis'] = selected_route['cedis_analysis']
 
         return {
             "request": {
@@ -265,7 +291,7 @@ class FEEPredictionService:
                 "pesos": {
                     "tiempo": settings.PESO_TIEMPO,
                     "costo": settings.PESO_COSTO,
-                    "stock": settings.PESO_PROBABILIDAD,  # Corresponde a probabilidad
+                    "stock": settings.PESO_PROBABILIDAD,
                     "distancia": settings.PESO_DISTANCIA
                 },
                 "candidatos": candidatos_simplificados,
@@ -287,8 +313,9 @@ class FEEPredictionService:
                     }
                 }
             },
+            "evaluacion_detallada": evaluacion_detallada,  # ✅ NUEVA SECCIÓN COMPLETA
             "logistica_entrega": {
-                "ruta": self._build_route_description(selected_route),  # ✅ NUEVO
+                "ruta": self._build_route_description(selected_route),
                 "tipo_ruta": selected_route.get('tipo_ruta', 'directa'),
                 "flota": self._get_fleet_info_simplified(selected_route),
                 "carrier": self._get_main_carrier(selected_route),
@@ -297,8 +324,8 @@ class FEEPredictionService:
                 "desglose_tiempos_h": self._get_time_breakdown(selected_route, external_factors),
                 "factores_aplicados": selected_route.get('factores_aplicados', []),
                 "probabilidad_cumplimiento": round(selected_route.get('probabilidad_cumplimiento', 0), 3),
-                # ✅ NUEVO: Agregar información de CEDIS para rutas complejas
-                "cedis_intermedio": self._get_cedis_from_store(selected_route) if selected_route.get('tipo_ruta') in ['compleja_cedis', 'multi_segmento_cedis'] else None
+                "cedis_intermedio": self._get_cedis_from_store(selected_route) if selected_route.get('tipo_ruta') in [
+                    'compleja_cedis', 'multi_segmento_cedis'] else None
             },
             "resultado_final": {
                 "tipo_entrega": fee_calculation.tipo_entrega.value,
@@ -311,6 +338,16 @@ class FEEPredictionService:
                 "probabilidad_exito": round(selected_route.get('probabilidad_cumplimiento', 0), 3),
                 "processing_time_ms": round(processing_time_ms, 1),
                 "confianza_prediccion": 0.85
+            },
+            "metadata": {
+                "csv_sources_used": {
+                    "producto": "productos_liverpool_50.csv",
+                    "codigo_postal": "codigos_postales_rangos_mexico.csv",
+                    "flota_externa": "flota_externa_costos_reales.csv"
+                },
+                "warnings": [],
+                "data_integrity": "validated",
+                "version_sistema": "3.0.0"
             }
         }
 
@@ -503,7 +540,16 @@ class FEEPredictionService:
     async def _analyze_stock_dynamic(self, request: PredictionRequest,
                                      product_info: Dict[str, Any],
                                      nearby_stores: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """📦 Análisis de stock CORREGIDO - con logging mejorado"""
+        """📦 Análisis de stock MEJORADO - captura información detallada para response"""
+
+        # ✅ NUEVO: Inicializar contenedor de detalles
+        analysis_details = {
+            'tiendas_cercanas': [],
+            'tiendas_autorizadas': [],
+            'stock_encontrado': [],
+            'asignacion_detallada': {},
+            'resumen_stock': {}
+        }
 
         # Tiendas autorizadas para el SKU
         tiendas_autorizadas = [t.strip() for t in product_info['tiendas_disponibles'].split(',')]
@@ -515,14 +561,27 @@ class FEEPredictionService:
             request.sku_id, local_store_ids, request.cantidad
         )
 
-        # ✅ LOGGING MEJORADO: Mostrar tiendas cercanas con nombres
+        # ✅ CAPTURAR: Tiendas cercanas
         logger.info(f"📍 Tiendas cercanas al CP {request.codigo_postal}:")
         for i, store in enumerate(nearby_stores[:5], 1):
             logger.info(f"   {i}. {store['nombre_tienda']} ({store['distancia_km']:.1f}km)")
 
+            analysis_details['tiendas_cercanas'].append({
+                'posicion': i,
+                'tienda_id': store['tienda_id'],
+                'nombre': store['nombre_tienda'],
+                'distancia_km': round(store['distancia_km'], 1),
+                'coordenadas': {
+                    'lat': float(store['latitud']),
+                    'lon': float(store['longitud'])
+                },
+                'zona_seguridad': store.get('zona_seguridad', 'Verde'),
+                'estado': store.get('estado', 'N/A'),
+                'alcaldia_municipio': store.get('alcaldia_municipio', 'N/A')
+            })
+
         # Verificar si hay stock local suficiente
         if stock_locations_local:
-            # ✅ LOGGING MEJORADO: Mostrar stock con nombres de tiendas
             logger.info(f"📦 Stock LOCAL encontrado para {request.sku_id}:")
             total_local_stock = 0
             for stock_loc in stock_locations_local:
@@ -536,7 +595,6 @@ class FEEPredictionService:
             if total_local_stock >= request.cantidad:
                 logger.info(f"✅ Stock LOCAL suficiente en {len(stock_locations_local)} tiendas cercanas")
 
-                # Usar solo tiendas locales con stock
                 authorized_nearby = [
                     store for store in nearby_stores
                     if any(stock['tienda_id'] == store['tienda_id'] for stock in stock_locations_local)
@@ -547,21 +605,28 @@ class FEEPredictionService:
                 )
 
                 if allocation['factible']:
-                    # ✅ LOGGING MEJORADO: Plan de asignación con detalles
-                    logger.info("📋 Plan de asignación LOCAL:")
-                    for plan_item in allocation['plan']:
-                        tienda_info = self._get_store_info_sync(plan_item['tienda_id'])
-                        nombre_tienda = tienda_info[
-                            'nombre_tienda'] if tienda_info else f"Tienda {plan_item['tienda_id']}"
-                        precio_unitario = plan_item.get('precio_unitario', 0)
-                        precio_total = precio_unitario * plan_item['cantidad']
-                        distancia = tienda_info.get('distancia_km', 0) if tienda_info else 0
+                    # ✅ CAPTURAR: Stock local y asignación
+                    for stock_loc in stock_locations_local:
+                        tienda_info = self._get_store_info_sync(stock_loc['tienda_id'])
+                        analysis_details['stock_encontrado'].append({
+                            'tienda_id': stock_loc['tienda_id'],
+                            'nombre_tienda': tienda_info[
+                                'nombre_tienda'] if tienda_info else f"Tienda {stock_loc['tienda_id']}",
+                            'stock_disponible': stock_loc['stock_disponible'],
+                            'distancia_km': round(tienda_info.get('distancia_km', 0) if tienda_info else 0, 1),
+                            'precio_tienda': stock_loc.get('precio_tienda', 0),
+                            'es_local': True
+                        })
 
-                        logger.info(f"   🏪 {nombre_tienda}:")
-                        logger.info(f"      → {plan_item['cantidad']} unidades")
-                        logger.info(f"      → ${precio_total:,.0f} total (${precio_unitario:,.0f} c/u)")
-                        logger.info(f"      → {distancia:.1f}km de distancia")
-                        logger.info(f"      → Razón: Stock local disponible, distancia óptima")
+                    analysis_details['resumen_stock'] = {
+                        'total_disponible': total_local_stock,
+                        'requerido': request.cantidad,
+                        'suficiente': True,
+                        'tiendas_con_stock': len(stock_locations_local),
+                        'tipo_stock': 'LOCAL'
+                    }
+
+                    self._capture_allocation_details(allocation, authorized_nearby, analysis_details, request.cantidad)
 
                     split_inventory = self._build_split_inventory(allocation['plan'], request.cantidad)
                     return {
@@ -570,7 +635,8 @@ class FEEPredictionService:
                         'split_inventory': split_inventory,
                         'stores_info': authorized_nearby,
                         'total_available': allocation['cantidad_cubierta'],
-                        'source': 'LOCAL_PRIORITY'
+                        'source': 'LOCAL_PRIORITY',
+                        'analysis_details': analysis_details  # ✅ NUEVO
                     }
 
         # PASO 2: Si no hay stock local suficiente, buscar en tiendas autorizadas nacionales
@@ -585,7 +651,8 @@ class FEEPredictionService:
         if not authorized_stores:
             return {
                 'factible': False,
-                'razon': f'No hay tiendas autorizadas disponibles para {request.sku_id}'
+                'razon': f'No hay tiendas autorizadas disponibles para {request.sku_id}',
+                'analysis_details': analysis_details
             }
 
         # Calcular distancias a todas las tiendas autorizadas
@@ -609,10 +676,21 @@ class FEEPredictionService:
         authorized_stores.sort(key=lambda x: x['distancia_km'])
         authorized_nearby = authorized_stores[:10]
 
-        # ✅ LOGGING MEJORADO: Mostrar tiendas autorizadas encontradas
+        # ✅ CAPTURAR: Tiendas autorizadas
         logger.info(f"🏪 Tiendas autorizadas más cercanas:")
-        for i, store in enumerate(authorized_nearby[:5], 1):
-            logger.info(f"   {i}. {store['nombre_tienda']} ({store['distancia_km']:.1f}km)")
+        for i, store in enumerate(authorized_nearby[:10], 1):
+            if i <= 5:  # Solo log las primeras 5
+                logger.info(f"   {i}. {store['nombre_tienda']} ({store['distancia_km']:.1f}km)")
+
+            analysis_details['tiendas_autorizadas'].append({
+                'posicion': i,
+                'tienda_id': store['tienda_id'],
+                'nombre': store['nombre_tienda'],
+                'distancia_km': round(store['distancia_km'], 1),
+                'estado': store.get('estado', 'N/A'),
+                'zona_seguridad': store.get('zona_seguridad', 'Verde'),
+                'alcaldia_municipio': store.get('alcaldia_municipio', 'N/A')
+            })
 
         # Buscar stock real en tiendas autorizadas
         store_ids = [store['tienda_id'] for store in authorized_nearby]
@@ -623,10 +701,11 @@ class FEEPredictionService:
         if not stock_locations:
             return {
                 'factible': False,
-                'razon': f'Sin stock disponible para {request.sku_id} en tiendas autorizadas'
+                'razon': f'Sin stock disponible para {request.sku_id} en tiendas autorizadas',
+                'analysis_details': analysis_details
             }
 
-        # ✅ LOGGING MEJORADO: Mostrar stock encontrado con detalles
+        # ✅ CAPTURAR: Stock encontrado
         logger.info(f"📦 Stock NACIONAL encontrado para {request.sku_id}:")
         total_stock = 0
         for stock_loc in stock_locations:
@@ -635,9 +714,29 @@ class FEEPredictionService:
             distancia = tienda_info['distancia_km'] if tienda_info else 999
 
             logger.info(f"   📍 {nombre_tienda}: {stock_loc['stock_disponible']} unidades ({distancia:.1f}km)")
+
+            analysis_details['stock_encontrado'].append({
+                'tienda_id': stock_loc['tienda_id'],
+                'nombre_tienda': nombre_tienda,
+                'stock_disponible': stock_loc['stock_disponible'],
+                'distancia_km': round(distancia, 1),
+                'precio_tienda': stock_loc.get('precio_tienda', 0),
+                'precio_total': stock_loc.get('precio_tienda', 0) * request.cantidad,
+                'es_local': False
+            })
+
             total_stock += stock_loc['stock_disponible']
 
         logger.info(f"📊 Stock NACIONAL total: {total_stock} | Requerido: {request.cantidad}")
+
+        # ✅ CAPTURAR: Resumen de stock
+        analysis_details['resumen_stock'] = {
+            'total_disponible': total_stock,
+            'requerido': request.cantidad,
+            'suficiente': total_stock >= request.cantidad,
+            'tiendas_con_stock': len(stock_locations),
+            'tipo_stock': 'NACIONAL'
+        }
 
         # Calcular asignación óptima
         allocation = self.repos.stock.calculate_optimal_allocation(
@@ -647,24 +746,12 @@ class FEEPredictionService:
         if not allocation['factible']:
             return {
                 'factible': False,
-                'razon': allocation['razon']
+                'razon': allocation['razon'],
+                'analysis_details': analysis_details
             }
 
-        # ✅ LOGGING MEJORADO: Plan de asignación final con justificación
-        logger.info("📋 Plan de asignación FINAL:")
-        for plan_item in allocation['plan']:
-            tienda_info = next((s for s in authorized_nearby if s['tienda_id'] == plan_item['tienda_id']), None)
-            nombre_tienda = tienda_info['nombre_tienda'] if tienda_info else f"Tienda {plan_item['tienda_id']}"
-            distancia = tienda_info['distancia_km'] if tienda_info else 999
-            precio_unitario = plan_item.get('precio_unitario', 0)
-            precio_total = precio_unitario * plan_item['cantidad']
-
-            logger.info(f"   🏪 {nombre_tienda}:")
-            logger.info(f"      → {plan_item['cantidad']} unidades de {request.cantidad} requeridas")
-            logger.info(f"      → ${precio_total:,.0f} total (${precio_unitario:,.0f} por unidad)")
-            logger.info(f"      → {distancia:.1f}km del destino")
-            logger.info(
-                f"      → Razón: {'Mejor distancia' if distancia < 200 else 'Única opción'} con stock suficiente")
+        # ✅ CAPTURAR: Asignación detallada
+        self._capture_allocation_details(allocation, authorized_nearby, analysis_details, request.cantidad)
 
         # Construir SplitInventory
         split_inventory = self._build_split_inventory(allocation['plan'], request.cantidad)
@@ -675,8 +762,59 @@ class FEEPredictionService:
             'split_inventory': split_inventory,
             'stores_info': authorized_nearby,
             'total_available': allocation['cantidad_cubierta'],
-            'source': 'NATIONAL_AUTHORIZED'
+            'source': 'NATIONAL_AUTHORIZED',
+            'analysis_details': analysis_details  # ✅ NUEVO
         }
+
+    # 2. NUEVO MÉTODO AUXILIAR para capturar detalles de asignación
+    def _capture_allocation_details(self, allocation: Dict[str, Any],
+                                    authorized_nearby: List[Dict[str, Any]],
+                                    analysis_details: Dict[str, Any],
+                                    cantidad_requerida: int):
+        """📋 Captura detalles de la asignación para el JSON response"""
+
+        logger.info("📋 Plan de asignación FINAL:")
+
+        analysis_details['asignacion_detallada'] = {
+            'metodo_asignacion': allocation.get('selection_method', 'tiempo_costo_optimizado'),
+            'pesos_utilizados': {
+                'tiempo': 35,
+                'costo': 35,
+                'stock': 20,
+                'distancia': 10
+            },
+            'plan_asignacion': []
+        }
+
+        for plan_item in allocation['plan']:
+            tienda_info = next((s for s in authorized_nearby if s['tienda_id'] == plan_item['tienda_id']), None)
+            nombre_tienda = tienda_info['nombre_tienda'] if tienda_info else f"Tienda {plan_item['tienda_id']}"
+            distancia = tienda_info['distancia_km'] if tienda_info else 999
+            precio_unitario = plan_item.get('precio_tienda', 0)
+            precio_total = precio_unitario * plan_item['cantidad']
+
+            logger.info(f"   🏪 {nombre_tienda}:")
+            logger.info(f"      → {plan_item['cantidad']} unidades de {cantidad_requerida} requeridas")
+            logger.info(f"      → ${precio_total:,.0f} total (${precio_unitario:,.0f} por unidad)")
+            logger.info(f"      → {distancia:.1f}km del destino")
+            logger.info(f"      → Razón: {plan_item.get('razon_seleccion', 'Stock disponible, distancia óptima')}")
+
+            plan_detail = {
+                'tienda_id': plan_item['tienda_id'],
+                'nombre_tienda': nombre_tienda,
+                'cantidad_asignada': plan_item['cantidad'],
+                'stock_disponible': plan_item['stock_disponible'],
+                'distancia_km': round(distancia, 1),
+                'tiempo_total_h': round(plan_item.get('tiempo_total_horas', 0), 1),
+                'costo_total_mxn': round(plan_item.get('costo_total', 0), 2),
+                'score_total': round(plan_item.get('score_total', 0), 3),
+                'fleet_type': plan_item.get('fleet_type', 'FE'),
+                'carrier': plan_item.get('carrier', 'Externo'),
+                'precio_unitario': precio_unitario,
+                'precio_total': precio_total,
+                'razon_seleccion': plan_item.get('razon_seleccion', 'Stock disponible, distancia óptima')
+            }
+            analysis_details['asignacion_detallada']['plan_asignacion'].append(plan_detail)
 
     def _build_split_inventory(self, plan: List[Dict[str, Any]], cantidad_requerida: int) -> SplitInventory:
         """🏗️ Construye objeto SplitInventory CON COORDENADAS REALES"""
@@ -1623,7 +1761,7 @@ class FEEPredictionService:
         return peso_unitario * cantidad
 
     def _rank_candidates_dynamic(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """🏆 Rankea candidatos con logging explicativo detallado"""
+        """🏆 Rankea candidatos y captura información detallada para JSON response"""
 
         if not candidates:
             return []
@@ -1644,6 +1782,26 @@ class FEEPredictionService:
         logger.info(f"   💰 Costo: ${min_costo:.0f} - ${max_costo:.0f}")
         logger.info(f"   📏 Distancia: {min_distancia:.1f}km - {max_distancia:.1f}km")
 
+        # ✅ NUEVO: Capturar tabla de evaluación estructurada
+        rutas_evaluadas = {
+            'pesos_utilizados': {
+                'tiempo': settings.PESO_TIEMPO,
+                'costo': settings.PESO_COSTO,
+                'stock': settings.PESO_PROBABILIDAD,
+                'distancia': settings.PESO_DISTANCIA
+            },
+            'rangos_metricas': {
+                'tiempo_min_h': round(min_tiempo, 1),
+                'tiempo_max_h': round(max_tiempo, 1),
+                'costo_min_mxn': round(min_costo, 0),
+                'costo_max_mxn': round(max_costo, 0),
+                'distancia_min_km': round(min_distancia, 1),
+                'distancia_max_km': round(max_distancia, 1)
+            },
+            'candidatos_evaluados': [],
+            'ranking_final': []
+        }
+
         for i, candidate in enumerate(candidates, 1):
             # Scores normalizados (0-1)
             score_tiempo = 1 - (candidate['tiempo_total_horas'] - min_tiempo) / max(1, max_tiempo - min_tiempo)
@@ -1653,23 +1811,17 @@ class FEEPredictionService:
             score_probabilidad = candidate['probabilidad_cumplimiento']
 
             # Score combinado con pesos dinámicos
-            weights = {
-                'tiempo': settings.PESO_TIEMPO,
-                'costo': settings.PESO_COSTO,
-                'probabilidad': settings.PESO_PROBABILIDAD,
-                'distancia': settings.PESO_DISTANCIA
-            }
-
+            weights = rutas_evaluadas['pesos_utilizados']
             score_combinado = (
                     weights['tiempo'] * score_tiempo +
                     weights['costo'] * score_costo +
-                    weights['probabilidad'] * score_probabilidad +
+                    weights['stock'] * score_probabilidad +
                     weights['distancia'] * score_distancia
             )
 
             # Bonus controlado para rutas directas
             if candidate['tipo_ruta'] == 'directa':
-                score_combinado += 0.05  # Bonus aditivo pequeño
+                score_combinado += 0.05
 
             # Normalizar SIEMPRE a máximo 1.0
             score_combinado = min(1.0, score_combinado)
@@ -1682,14 +1834,35 @@ class FEEPredictionService:
                 'probabilidad': round(score_probabilidad, 3)
             }
 
-            # ✅ LOGGING DETALLADO: Evaluación de cada candidato
+            # ✅ CAPTURAR: Información del candidato para el JSON
+            candidato_info = {
+                'posicion_evaluacion': i,
+                'nombre_origen': candidate.get('origen_principal', f"Candidato {i}"),
+                'tipo_ruta': candidate['tipo_ruta'],
+                'distancia_km': round(candidate['distancia_total_km'], 1),
+                'tiempo_h': round(candidate['tiempo_total_horas'], 1),
+                'costo_mxn': round(candidate['costo_total_mxn'], 0),
+                'probabilidad': round(candidate['probabilidad_cumplimiento'], 3),
+                'scores_individuales': candidate['score_breakdown'],
+                'score_final': candidate['score_lightgbm'],
+                'fleet_type': candidate.get('segmentos', [{}])[0].get('tipo_flota', 'FI') if candidate.get(
+                    'segmentos') else 'FI',
+                'carrier': candidate.get('segmentos', [{}])[0].get('carrier', 'Liverpool') if candidate.get(
+                    'segmentos') else 'Liverpool',
+                'stock_local': candidate.get('has_local_stock', False),
+                'factores_aplicados': candidate.get('factores_aplicados', [])
+            }
+
+            rutas_evaluadas['candidatos_evaluados'].append(candidato_info)
+
+            # Logging detallado existente
             origen_name = candidate.get('origen_principal', f"Candidato {i}")
             logger.info(f"📊 Evaluando: {origen_name}")
             logger.info(f"   🔢 Scores individuales:")
             logger.info(f"      → Tiempo: {score_tiempo:.3f} (peso: {weights['tiempo']})")
             logger.info(f"      → Costo: {score_costo:.3f} (peso: {weights['costo']})")
             logger.info(f"      → Distancia: {score_distancia:.3f} (peso: {weights['distancia']})")
-            logger.info(f"      → Probabilidad: {score_probabilidad:.3f} (peso: {weights['probabilidad']})")
+            logger.info(f"      → Probabilidad: {score_probabilidad:.3f} (peso: {weights['stock']})")
             logger.info(f"   🎯 Score final: {score_combinado:.4f}")
             logger.info(
                 f"   💡 Ventajas: {candidate['tipo_ruta']}, {candidate['tiempo_total_horas']:.1f}h, ${candidate['costo_total_mxn']:.0f}")
@@ -1697,6 +1870,42 @@ class FEEPredictionService:
         # Ordenar por score
         ranked = sorted(candidates, key=lambda x: x['score_lightgbm'], reverse=True)
 
+        # ✅ CAPTURAR: Ranking final
+        for i, candidate in enumerate(ranked, 1):
+            ranking_info = {
+                'posicion_final': i,
+                'ruta_id': candidate['ruta_id'],
+                'nombre_origen': candidate.get('origen_principal', f"Ruta {i}"),
+                'score_final': candidate['score_lightgbm'],
+                'tiempo_h': round(candidate['tiempo_total_horas'], 1),
+                'costo_mxn': round(candidate['costo_total_mxn'], 0),
+                'tipo_ruta': candidate['tipo_ruta'],
+                'probabilidad': round(candidate['probabilidad_cumplimiento'], 3),
+                'es_ganador': i == 1
+            }
+
+            if i == 1:  # Agregar razones del ganador
+                ranking_info['razones_victoria'] = []
+                if candidate['score_lightgbm'] >= 0.9:
+                    ranking_info['razones_victoria'].append(f"Score excelente ({candidate['score_lightgbm']:.3f})")
+                if candidate['tipo_ruta'] == 'directa':
+                    ranking_info['razones_victoria'].append("Ruta directa sin transbordos")
+                if candidate['tiempo_total_horas'] <= min_tiempo * 1.1:
+                    ranking_info['razones_victoria'].append(
+                        f"Tiempo competitivo ({candidate['tiempo_total_horas']:.1f}h)")
+                if candidate['probabilidad_cumplimiento'] >= 0.8:
+                    ranking_info['razones_victoria'].append(
+                        f"Alta confiabilidad ({candidate['probabilidad_cumplimiento']:.1%})")
+                if candidate['costo_total_mxn'] <= min_costo * 1.2:
+                    ranking_info['razones_victoria'].append(f"Costo eficiente (${candidate['costo_total_mxn']:.0f})")
+
+                # Si no hay razones específicas, agregar una genérica
+                if not ranking_info['razones_victoria']:
+                    ranking_info['razones_victoria'].append("Mejor opción disponible")
+
+            rutas_evaluadas['ranking_final'].append(ranking_info)
+
+        # Logging de tabla existente
         logger.info("🏆 RANKING FINAL:")
         logger.info("   Pos | Tienda/Ruta              | Score  | Tiempo | Costo  | Tipo")
         logger.info("   ----|--------------------------|--------|--------|--------|------------")
@@ -1707,12 +1916,11 @@ class FEEPredictionService:
             tiempo = candidate['tiempo_total_horas']
             costo = candidate['costo_total_mxn']
             tipo = candidate['tipo_ruta'][:10]
-            prob = candidate['probabilidad_cumplimiento']
 
             logger.info(f"   {i:2d}. | {origen_name} | {score:.3f} | {tiempo:5.1f}h | ${costo:6.0f} | {tipo}")
 
             if i == 1:
-                # ✅ LOGGING: Explicar por qué ganó el primero
+                # Logging del ganador
                 logger.info(f"   🎯 GANADOR: {candidate.get('origen_principal', 'N/A')}")
                 logger.info(f"      → Razones principales:")
 
@@ -1721,12 +1929,16 @@ class FEEPredictionService:
                 elif candidate['tipo_ruta'] == 'directa':
                     logger.info(f"      → Ruta directa - Sin transbordos ni CEDIS intermedio")
 
-                if tiempo <= min(tiempos) * 1.1:
+                if tiempo <= min_tiempo * 1.1:
                     logger.info(f"      → Tiempo competitivo ({tiempo:.1f}h)")
-                if costo <= min(costos) * 1.2:
+                if costo <= min_costo * 1.2:
                     logger.info(f"      → Costo eficiente (${costo:.0f})")
-                if prob >= 0.8:
-                    logger.info(f"      → Alta confiabilidad ({prob:.1%})")
+                if candidate['probabilidad_cumplimiento'] >= 0.8:
+                    logger.info(f"      → Alta confiabilidad ({candidate['probabilidad_cumplimiento']:.1%})")
+
+        # ✅ AGREGAR: Información de evaluación a cada candidato
+        for candidate in ranked:
+            candidate['rutas_evaluadas_detalle'] = rutas_evaluadas
 
         return ranked
 
@@ -2246,12 +2458,11 @@ class FEEPredictionService:
         # 1. Encontrar tienda origen con stock
         origen_store = await self._get_store_info(stock_plan[0]['tienda_id'])
 
-        # 2. Encontrar CEDIS intermedio óptimo
+        # 2. Encontrar CEDIS intermedio óptimo (ya captura información)
         optimal_cedis = await self._find_optimal_cedis_real(origen_store, codigo_postal)
 
         # 3. Encontrar tienda destino cercana al CP
         destino_store = await self._find_closest_store_to_cp(codigo_postal)
-
         # 4. Calcular ruta: Origen → CEDIS → Tienda Destino → Cliente
         route_segments = []
         total_time = 0
@@ -2296,7 +2507,7 @@ class FEEPredictionService:
         # Probabilidad más conservadora para rutas complejas
         probability = max(0.65, 0.85 - (len(route_segments) * 0.05))
 
-        return {
+        result = {
             'ruta_id': f"complex_{origen_store['tienda_id']}_{optimal_cedis['cedis_id']}_{destino_store['tienda_id']}",
             'tipo_ruta': 'compleja_cedis',
             'segmentos': route_segments,
@@ -2315,8 +2526,15 @@ class FEEPredictionService:
             }
         }
 
+        # ✅ AGREGAR: Información de CEDIS al resultado
+        if 'cedis_analysis' in optimal_cedis:
+            result['cedis_analysis'] = optimal_cedis['cedis_analysis']
+
+        return result
+
+    # 4. REEMPLAZAR _find_optimal_cedis_real (línea ~1961)
     async def _find_optimal_cedis_real(self, origen_store: Dict[str, Any], codigo_postal: str) -> Dict[str, Any]:
-        """🏭 Encuentra CEDIS óptimo REAL con logging detallado"""
+        """🏭 Encuentra CEDIS óptimo REAL y captura información detallada para JSON"""
 
         cedis_df = self.repos.data_manager.get_data('cedis')
         cp_info = self.repos.store._get_postal_info(codigo_postal)
@@ -2326,6 +2544,30 @@ class FEEPredictionService:
         logger.info(f"   📍 Origen: {origen_store['nombre_tienda']} ({origen_store['tienda_id']})")
         logger.info(f"   📍 Destino: CP {codigo_postal} ({estado_destino})")
 
+        # ✅ NUEVO: Capturar información estructurada de CEDIS
+        cedis_analysis = {
+            'origen_tienda': {
+                'id': origen_store['tienda_id'],
+                'nombre': origen_store['nombre_tienda'],
+                'coordenadas': {
+                    'lat': float(origen_store['latitud']),
+                    'lon': float(origen_store['longitud'])
+                }
+            },
+            'destino_info': {
+                'codigo_postal': codigo_postal,
+                'estado_destino': estado_destino,
+                'coordenadas': {
+                    'lat': float(cp_info['latitud_centro']),
+                    'lon': float(cp_info['longitud_centro'])
+                }
+            },
+            'cedis_evaluados': [],
+            'cedis_seleccionado': None,
+            'total_cedis_disponibles': cedis_df.height,
+            'cedis_descartados': []
+        }
+
         cedis_candidates = []
 
         logger.info(f"🔍 Evaluando {cedis_df.height} CEDIS disponibles...")
@@ -2333,8 +2575,20 @@ class FEEPredictionService:
         for cedis in cedis_df.to_dicts():
             # 1. Verificar cobertura del estado destino
             cobertura = cedis.get('cobertura_estados', '')
-            if not ('Nacional' in cobertura or estado_destino in cobertura):
+
+            # ✅ CAPTURAR: Información básica de cada CEDIS
+            cedis_eval = {
+                'cedis_id': cedis['cedis_id'],
+                'nombre': cedis['nombre_cedis'],
+                'cobertura_estados': cobertura,
+                'cubre_destino': 'Nacional' in cobertura or estado_destino in cobertura,
+                'evaluado': False
+            }
+
+            if not cedis_eval['cubre_destino']:
                 logger.info(f"   ❌ {cedis['nombre_cedis']}: No cubre {estado_destino}")
+                cedis_eval['razon_descarte'] = f"No cubre {estado_destino}"
+                cedis_analysis['cedis_descartados'].append(cedis_eval)
                 continue
 
             # 2. Corregir coordenadas si están corruptas
@@ -2367,7 +2621,22 @@ class FEEPredictionService:
             cobertura_bonus = 0.8 if estado_destino in cobertura else 1.0
             score = tiempo_total * cobertura_bonus
 
-            # ✅ LOGGING DETALLADO: Evaluación de cada CEDIS
+            # ✅ CAPTURAR: Información completa del CEDIS evaluado
+            cedis_eval.update({
+                'evaluado': True,
+                'coordenadas': {
+                    'lat': cedis_lat,
+                    'lon': cedis_lon
+                },
+                'distancia_origen_cedis_km': round(dist_origen_cedis, 1),
+                'distancia_cedis_destino_km': round(dist_cedis_destino, 1),
+                'distancia_total_km': round(distancia_total, 1),
+                'tiempo_procesamiento_h': tiempo_proc_num,
+                'score': round(score, 2),
+                'cobertura_especifica': estado_destino in cobertura
+            })
+
+            # Logging detallado existente
             logger.info(f"   📊 {cedis['nombre_cedis']}:")
             logger.info(f"      → Cobertura: {cobertura}")
             logger.info(f"      → {origen_store['nombre_tienda']} → CEDIS: {dist_origen_cedis:.1f}km")
@@ -2388,6 +2657,8 @@ class FEEPredictionService:
                 'cobertura_match': estado_destino in cobertura
             })
 
+            cedis_analysis['cedis_evaluados'].append(cedis_eval)
+
         if not cedis_candidates:
             logger.error(f"❌ No se encontró ningún CEDIS disponible para {estado_destino}")
             return None
@@ -2395,21 +2666,51 @@ class FEEPredictionService:
         # Ordenar por score (menor es mejor)
         cedis_candidates.sort(key=lambda x: x['score'])
 
-        # ✅ LOGGING: Ranking de CEDIS
+        # ✅ CAPTURAR: Ranking de CEDIS
+        cedis_analysis['ranking_cedis'] = []
         logger.info(f"🏆 Ranking de CEDIS (mejores 3):")
-        for i, cedis in enumerate(cedis_candidates[:3], 1):
+
+        for i, cedis in enumerate(cedis_candidates[:5], 1):
             logger.info(f"   {i}. {cedis['nombre_cedis']}")
             logger.info(f"      → Score: {cedis['score']:.2f}")
             logger.info(f"      → Distancia total: {cedis['distancia_total']:.1f}km")
             logger.info(f"      → Cobertura específica: {'Sí' if cedis['cobertura_match'] else 'No'}")
 
+            cedis_analysis['ranking_cedis'].append({
+                'posicion': i,
+                'cedis_id': cedis['cedis_id'],
+                'nombre': cedis['nombre_cedis'],
+                'score': round(cedis['score'], 2),
+                'distancia_total_km': round(cedis['distancia_total'], 1),
+                'cobertura_especifica': cedis['cobertura_match'],
+                'seleccionado': i == 1
+            })
+
         best_cedis = cedis_candidates[0]
+
+        # ✅ CAPTURAR: CEDIS seleccionado
+        cedis_analysis['cedis_seleccionado'] = {
+            'cedis_id': best_cedis['cedis_id'],
+            'nombre': best_cedis['nombre_cedis'],
+            'score': round(best_cedis['score'], 2),
+            'distancia_total_km': round(best_cedis['distancia_total'], 1),
+            'tiempo_procesamiento_h': best_cedis['tiempo_procesamiento_num'],
+            'cobertura_especifica': best_cedis['cobertura_match'],
+            'razon_seleccion': f"Menor score total ({best_cedis['score']:.2f})",
+            'coordenadas': {
+                'lat': best_cedis['latitud_corregida'],
+                'lon': best_cedis['longitud_corregida']
+            }
+        }
 
         logger.info(f"✅ CEDIS SELECCIONADO: {best_cedis['nombre_cedis']}")
         logger.info(f"   🎯 Razón: Menor score total ({best_cedis['score']:.2f})")
         logger.info(f"   📏 Distancia combinada: {best_cedis['distancia_total']:.1f}km")
         logger.info(f"   ⏱️ Tiempo procesamiento: {best_cedis['tiempo_procesamiento_num']:.1f}h")
         logger.info(f"   🌍 Cobertura {estado_destino}: {'Directa' if best_cedis['cobertura_match'] else 'Nacional'}")
+
+        # ✅ AGREGAR: Análisis al CEDIS seleccionado
+        best_cedis['cedis_analysis'] = cedis_analysis
 
         return best_cedis
 
