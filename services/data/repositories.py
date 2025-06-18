@@ -5,6 +5,7 @@ from typing import Optional, List, Dict, Any
 
 import polars as pl
 
+from config.settings import settings  # ✅ IMPORTAR settings
 from utils.logger import logger
 
 
@@ -223,7 +224,7 @@ class OptimizedStockRepository:
                                      sku_id: str = None,
                                      codigo_postal: str = None,
                                      fecha_entrega: str = None) -> Dict[str, Any]:
-        """🧠 SISTEMA DE ASIGNACIÓN OPTIMIZADO con logs profesionales y datos reales"""
+        """🧠 SISTEMA DE ASIGNACIÓN OPTIMIZADO con pesos desde settings"""
 
         if not stock_locations:
             return {'factible': False, 'razon': 'Sin stock disponible', 'plan': []}
@@ -297,7 +298,7 @@ class OptimizedStockRepository:
         if not candidates_data:
             return {'factible': False, 'razon': 'No hay candidatos válidos', 'plan': []}
 
-        # ✅ 3. NORMALIZACIÓN DE SCORES (0-1)
+        # ✅ 3. NORMALIZACIÓN DE SCORES CON PESOS DE SETTINGS
         tiempos = [c['tiempo_total_horas'] for c in candidates_data]
         costos = [c['costo_total'] for c in candidates_data]
         distancias = [c['distancia_km'] for c in candidates_data]
@@ -308,8 +309,14 @@ class OptimizedStockRepository:
         min_distancia, max_distancia = min(distancias), max(distancias)
         min_stock, max_stock = min(stocks), max(stocks)
 
-        logger.info(f"📈 PESOS UTILIZADOS:")
-        logger.info(f"   ⏱️ Tiempo: 35% | 💰 Costo: 35% | 📦 Stock: 20% | 📏 Distancia: 10%")
+        # ✅ USAR PESOS DE SETTINGS
+        peso_tiempo = settings.PESO_TIEMPO
+        peso_costo = settings.PESO_COSTO
+        peso_stock = settings.PESO_PROBABILIDAD
+        peso_distancia = settings.PESO_DISTANCIA
+
+        logger.info(f"📈 PESOS UTILIZADOS (desde settings):")
+        logger.info(f"   ⏱️ Tiempo: {peso_tiempo*100:.0f}% | 💰 Costo: {peso_costo*100:.0f}% | 📦 Stock: {peso_stock*100:.0f}% | 📏 Distancia: {peso_distancia*100:.0f}%")
         logger.info(f"")
 
         # Calcular scores normalizados
@@ -320,13 +327,12 @@ class OptimizedStockRepository:
             score_distancia = 1 - (candidate['distancia_km'] - min_distancia) / max(max_distancia - min_distancia, 0.1)
             score_stock = 1.0 if candidate['stock_disponible'] >= cantidad_requerida else 0.6
 
-            # Score total ponderado
-            PESO_TIEMPO, PESO_COSTO, PESO_STOCK, PESO_DISTANCIA = 0.35, 0.35, 0.20, 0.10
+            # ✅ Score total ponderado CON PESOS DE SETTINGS
             total_score = (
-                    score_tiempo * PESO_TIEMPO +
-                    score_costo * PESO_COSTO +
-                    score_stock * PESO_STOCK +
-                    score_distancia * PESO_DISTANCIA
+                    score_tiempo * peso_tiempo +
+                    score_costo * peso_costo +
+                    score_stock * peso_stock +
+                    score_distancia * peso_distancia
             )
 
             candidate['scores'] = {
@@ -393,10 +399,10 @@ class OptimizedStockRepository:
 
             logger.info(f"")
             logger.info(f"📈 Desglose del score (Total: {scores['total']:.3f}):")
-            logger.info(f"   ⏱️ Tiempo: {scores['tiempo']:.3f} × 35% = {scores['tiempo'] * 0.35:.3f}")
-            logger.info(f"   💰 Costo:  {scores['costo']:.3f} × 35% = {scores['costo'] * 0.35:.3f}")
-            logger.info(f"   📦 Stock:  {scores['stock']:.3f} × 20% = {scores['stock'] * 0.20:.3f}")
-            logger.info(f"   📏 Dist:   {scores['distancia']:.3f} × 10% = {scores['distancia'] * 0.10:.3f}")
+            logger.info(f"   ⏱️ Tiempo: {scores['tiempo']:.3f} × {peso_tiempo*100:.0f}% = {scores['tiempo'] * peso_tiempo:.3f}")
+            logger.info(f"   💰 Costo:  {scores['costo']:.3f} × {peso_costo*100:.0f}% = {scores['costo'] * peso_costo:.3f}")
+            logger.info(f"   📦 Stock:  {scores['stock']:.3f} × {peso_stock*100:.0f}% = {scores['stock'] * peso_stock:.3f}")
+            logger.info(f"   📏 Dist:   {scores['distancia']:.3f} × {peso_distancia*100:.0f}% = {scores['distancia'] * peso_distancia:.3f}")
 
         # ✅ 6. PLAN DE ASIGNACIÓN
         plan = []
@@ -442,7 +448,7 @@ class OptimizedStockRepository:
             'razon': f'Optimización tiempo-costo con {len(plan)} tienda(s)',
             'contexto_destino': contexto,
             'candidates_evaluated': len(candidates_data),
-            'selection_method': 'tiempo_costo_optimizado_v2'
+            'selection_method': 'tiempo_costo_optimizado_settings'
         }
 
     def _get_destination_context(self, codigo_postal: str, fecha_entrega: str) -> Dict[str, Any]:
@@ -493,33 +499,6 @@ class OptimizedStockRepository:
             'codigo_postal': codigo_postal
         }
 
-    def _get_selection_reason(self, candidate: Dict[str, Any], all_candidates: List[Dict[str, Any]]) -> str:
-        """📝 Genera razón de selección para una tienda"""
-
-        scores = candidate['scores']
-
-        reasons = []
-
-        # Razón principal por score
-        if candidate == all_candidates[0]:
-            reasons.append("Mayor score total")
-
-        # Razones específicas
-        if scores['distancia'] >= 8.0:
-            reasons.append("Muy cerca")
-        elif scores['distancia'] >= 6.0:
-            reasons.append("Distancia aceptable")
-
-        if scores['disponibilidad'] == 10.0:
-            reasons.append("Cubre demanda completa")
-
-        if scores['stock'] >= 8.0:
-            reasons.append("Alto stock")
-
-        if scores['precio'] >= 8.0:
-            reasons.append("Precio competitivo")
-
-        return ", ".join(reasons) if reasons else "Mejor opción disponible"
 
     def _calculate_real_time_and_cost(self, tienda_id: str, sku_id: str,
                                       cantidad: int, distancia_km: float) -> Dict[str, Any]:
@@ -604,7 +583,8 @@ class OptimizedStockRepository:
             'zona_seguridad': zona_seguridad
         }
 
-    def _calculate_fallback_metrics(self, distancia_km: float, cantidad: int) -> Dict[str, Any]:
+    @staticmethod
+    def _calculate_fallback_metrics(distancia_km: float, cantidad: int) -> Dict[str, Any]:
         """🔄 Métricas de fallback cuando no hay datos completos"""
 
         if distancia_km <= 50:
@@ -629,7 +609,8 @@ class OptimizedStockRepository:
             'zona_seguridad': 'Amarilla'
         }
 
-    def _get_detailed_selection_reason(self, candidate: Dict[str, Any], all_candidates: List[Dict[str, Any]]) -> str:
+    @staticmethod
+    def _get_detailed_selection_reason(candidate: Dict[str, Any], all_candidates: List[Dict[str, Any]]) -> str:
         """📝 Genera razón DETALLADA de selección"""
 
         scores = candidate['scores']
@@ -659,8 +640,6 @@ class OptimizedStockRepository:
 
         return ", ".join(reasons) if reasons else "Mejor opción disponible"
 
-
-# REEMPLAZAR SOLO LA CLASE OptimizedExternalFactorsRepository en tu repositories.py
 
 class OptimizedExternalFactorsRepository:
     """🌤️ Repositorio de factores externos optimizado - MEJORADO EVENTOS"""
@@ -728,7 +707,8 @@ class OptimizedExternalFactorsRepository:
         logger.info(f"📅 No hay eventos válidos cerca de {fecha_target}, calculando factores estacionales")
         return self._calculate_seasonal_factors(fecha, codigo_postal)
 
-    def _is_event_still_valid(self, evento_nombre: str, dias_diferencia: int, fecha_target: date) -> bool:
+    @staticmethod
+    def _is_event_still_valid(evento_nombre: str, dias_diferencia: int, fecha_target: date) -> bool:
         """✅ Determina si un evento sigue siendo válido según su tipo y tiempo transcurrido"""
 
         # Eventos FUTUROS - solo válidos si son eventos de preparación/anticipación
@@ -909,7 +889,8 @@ class OptimizedExternalFactorsRepository:
             'observaciones_clima_regional': f'Factores calculados para {epoca} - {evento_calculado}'
         }
 
-    def _calculate_time_impact_from_demand(self, factor_demanda: float, trafico_nivel: str) -> float:
+    @staticmethod
+    def _calculate_time_impact_from_demand(factor_demanda: float, trafico_nivel: str) -> float:
         """⏱️ Calcula impacto en tiempo desde factor de demanda"""
         base_impact = max(0, (factor_demanda - 1.0) * 2.0)
 
@@ -924,7 +905,8 @@ class OptimizedExternalFactorsRepository:
         final_impact = base_impact * trafico_multiplier
         return round(min(8.0, final_impact), 1)
 
-    def _calculate_cost_impact_from_demand(self, factor_demanda: float, evento: str) -> float:
+    @staticmethod
+    def _calculate_cost_impact_from_demand(factor_demanda: float, evento: str) -> float:
         """💰 Calcula impacto en costo desde factor de demanda"""
         base_impact = max(0, (factor_demanda - 1.0) * 15)
 
@@ -1018,8 +1000,8 @@ class OptimizedExternalFactorsRepository:
             f"🌤️ Factores procesados: demanda={factor_demanda:.2f}, tiempo_extra={impacto_tiempo}h, costo_extra={impacto_costo}%")
         return result
 
-    # Mantener métodos existentes para compatibilidad
-    def _calculate_time_impact(self, factor_demanda: float, factors: Dict[str, Any]) -> float:
+    @staticmethod
+    def _calculate_time_impact(factor_demanda: float, factors: Dict[str, Any]) -> float:
         """⏱️ Calcula impacto en tiempo (método original)"""
         base_impact = max(0, (factor_demanda - 1.0) * 2.0)
 
@@ -1030,7 +1012,8 @@ class OptimizedExternalFactorsRepository:
 
         return round(min(8.0, base_impact), 1)
 
-    def _calculate_cost_impact(self, factor_demanda: float, factors: Dict[str, Any]) -> float:
+    @staticmethod
+    def _calculate_cost_impact(factor_demanda: float, factors: Dict[str, Any]) -> float:
         """💰 Calcula impacto en costo (método original)"""
         base_impact = max(0, (factor_demanda - 1.0) * 15)
 
@@ -1040,10 +1023,6 @@ class OptimizedExternalFactorsRepository:
             base_impact += 20.0
 
         return round(min(50.0, base_impact), 1)
-
-    def _generate_factors(self, fecha: datetime, cp: str) -> Dict[str, Any]:
-        """🤖 Genera factores automáticos (mantener para compatibilidad)"""
-        return self._calculate_seasonal_factors(fecha, cp)
 
 
 class OptimizedFleetRepository:
@@ -1075,8 +1054,6 @@ class OptimizedFleetRepository:
 
         return carriers
 
-
-# Repositorio unificado
 class OptimizedRepositories:
     """🎯 Repositorios optimizados unificados"""
 

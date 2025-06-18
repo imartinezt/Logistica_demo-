@@ -1,10 +1,7 @@
-# geo_calculator.py - VERSIÓN CORREGIDA
 import math
-from typing import Tuple, Optional
+from typing import Tuple
 from geopy.distance import geodesic, great_circle
 from pyproj import Transformer
-
-from config.settings import settings
 from utils.logger import logger
 
 
@@ -297,42 +294,3 @@ class GeoCalculator:
         logger.info(f"🚛 Viaje: {distance_km:.1f}km a {adjusted_speed:.1f}km/h = {total_time:.1f}h")
 
         return round(max(0.3, total_time), 1)
-
-    @staticmethod
-    def get_road_type_by_distance(distance_km: float) -> str:
-        """🛣️ Determina tipo de camino por distancia"""
-        if distance_km <= 20:
-            return 'urbano'
-        elif distance_km <= 100:
-            return 'suburbano'
-        elif distance_km <= 500:
-            return 'carretera'
-        else:
-            return 'autopista'
-
-    @staticmethod
-    def clear_cache():
-        """🗑️ Limpiar cache de coordenadas"""
-        GeoCalculator._coordinate_cache.clear()
-        logger.info("🗑️ Cache de coordenadas limpiado")
-
-    @staticmethod
-    def validate_postal_code_coordinates(cp: str, lat: float, lon: float) -> bool:
-        """📮 Valida que las coordenadas coincidan con el código postal"""
-        try:
-            # Validaciones específicas por rangos de CP
-            cp_int = int(cp[:2])  # Primeros 2 dígitos
-
-            # Validaciones básicas por estado
-            if cp_int == 77:  # Quintana Roo
-                return 19.5 <= lat <= 22.0 and -89.0 <= lon <= -86.5
-            elif cp_int == 76:  # Querétaro  
-                return 20.0 <= lat <= 21.5 and -101.0 <= lon <= -99.0
-            elif cp_int in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]:  # CDMX/EdoMex
-                return 19.0 <= lat <= 20.0 and -100.0 <= lon <= -98.5
-
-            # Para otros estados, validación general de México
-            return 14.5 <= lat <= 32.8 and -117.4 <= lon <= -86.7
-
-        except (ValueError, TypeError):
-            return False

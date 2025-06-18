@@ -30,12 +30,13 @@ class Settings(BaseSettings):
     TIEMPO_PREPARACION_CEDIS: float = 2.0  # 2 horas para CEDIS (incluye cross-dock)
 
     # ------------------------------------------------------------------
-    # Multi-objective weights
+    # Multi-objective weights - CORREGIDOS para consistencia
     # ------------------------------------------------------------------
-    PESO_TIEMPO: float = 0.40  # Prioridad alta al tiempo
-    PESO_COSTO: float = 0.20  # Menor peso al costo (no filtrar por límites)
-    PESO_PROBABILIDAD: float = 0.35  # Alta prioridad a confiabilidad
-    PESO_DISTANCIA: float = 0.05  # Menor importancia a distancia pura
+    PESO_TIEMPO: float = 0.35  # 35% - Balance tiempo/costo
+    PESO_COSTO: float = 0.35  # 35% - Balance tiempo/costo
+    PESO_PROBABILIDAD: float = 0.20  # 20% - Confiabilidad importante pero no dominante
+    PESO_DISTANCIA: float = 0.10  # 10% - Distancia como factor secundario
+
     LIGHTGBM_PARAMS: Dict[str, Any] = {
         'objective': 'ranking',
         'metric': 'ndcg',

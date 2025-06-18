@@ -15,13 +15,9 @@ def setup_logging():
         logger_factory=structlog.PrintLoggerFactory(),
         cache_logger_on_first_use=True,
     )
-
-# Configure standard logging
 logging.basicConfig(
     format="%(message)s",
     stream=sys.stdout,
     level=logging.INFO,
 )
-
-# Create logger
 logger = structlog.get_logger("liverpool_fee")

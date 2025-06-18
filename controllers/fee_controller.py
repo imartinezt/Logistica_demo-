@@ -17,14 +17,13 @@ def get_fee_service() -> FEEPredictionService:
     """🔧 Dependency injection para FEE service optimizado"""
     global _fee_service
     if _fee_service is None:
-        # ✅ CORREGIDO: Inicializar repositorios optimizados primero
-        logger.info("🚀 Inicializando repositorios optimizados...")
+        logger.info("🚀 Inicializando repositorios")
         repositories = OptimizedRepositories(settings.DATA_DIR)
 
-        logger.info("🎯 Inicializando servicio FEE optimizado...")
+        logger.info("🎯 Inicializando servicio FEE...")
         _fee_service = FEEPredictionService(repositories)
 
-        logger.info("✅ Servicio FEE optimizado listo!")
+        logger.info("✅ Servicio FEE listo!")
     return _fee_service
 
 
@@ -44,8 +43,6 @@ async def predict_delivery_fee(
             sku_id=request.sku_id,
             cantidad=request.cantidad
         )
-
-        # Obtener respuesta simplificada
         resultado = await service.predict_fee(request)
         processing_time = (time.time() - start_time) * 1000
 

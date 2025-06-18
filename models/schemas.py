@@ -11,19 +11,15 @@ class TipoEntregaEnum(str, Enum):
     STANDARD = "STANDARD"
     PROGRAMADA = "PROGRAMADA"
 
-
 class TipoFlotaEnum(str, Enum):
     FI = "FI"  # Flota Interna Liverpool
     FE = "FE"  # Flota Externa
     FI_FE = "FI_FE"  # Híbrida
 
-
 class EstadoRutaEnum(str, Enum):
     FACTIBLE = "FACTIBLE"
     NO_FACTIBLE = "NO_FACTIBLE"
     CONDICIONAL = "CONDICIONAL"
-
-
 
 class PredictionRequest(BaseModel):
     """📥 Request para predicción FEE"""
@@ -43,7 +39,6 @@ class PredictionRequest(BaseModel):
             raise ValueError('Código postal debe ser numérico')
         return v
 
-
 class UbicacionStock(BaseModel):
     """📦 Stock en una ubicación específica"""
     ubicacion_id: str = Field(..., description="ID de tienda o CEDIS")
@@ -57,7 +52,6 @@ class UbicacionStock(BaseModel):
         default=1.5, description="Tiempo picking/packing"
     )
 
-
 class SplitInventory(BaseModel):
     """🔄 Split de inventario entre múltiples ubicaciones"""
     ubicaciones: List[UbicacionStock] = Field(
@@ -67,7 +61,6 @@ class SplitInventory(BaseModel):
     cantidad_total_disponible: int = Field(..., ge=0)
     es_split_factible: bool = Field(..., description="Si el split es posible")
     razon_split: str = Field(..., description="Por qué se hace el split")
-
 
 class Segmento(BaseModel):
     """🚚 Segmento individual de una ruta"""
@@ -84,7 +77,6 @@ class Segmento(BaseModel):
     factores_aplicados: List[str] = Field(
         default_factory=list, description="Factores que afectaron el segmento"
     )
-
 
 class RutaCompleta(BaseModel):
     """🗺️ Ruta completa multi-segmento"""
@@ -109,8 +101,6 @@ class RutaCompleta(BaseModel):
     estado: EstadoRutaEnum = Field(..., description="Estado de la ruta")
     probabilidad_cumplimiento: float = Field(..., ge=0, le=1)
     factores_riesgo: List[str] = Field(default_factory=list)
-
-
 
 class FactoresExternos(BaseModel):
     """🌤️ Factores externos detectados y calculados"""
@@ -142,7 +132,6 @@ class FactoresExternos(BaseModel):
         description="Baja|Normal|Media|Alta|Crítica"
     )
 
-
 class CandidatoRuta(BaseModel):
     """🎯 Candidato generado por LightGBM"""
     ruta: RutaCompleta = Field(..., description="Ruta completa")
@@ -155,7 +144,6 @@ class CandidatoRuta(BaseModel):
         default_factory=dict, description="Trade-offs identificados"
     )
 
-
 class DecisionGemini(BaseModel):
     """🧠 Decisión final de Gemini"""
     candidato_seleccionado: CandidatoRuta = Field(..., description="Ganador")
@@ -166,8 +154,6 @@ class DecisionGemini(BaseModel):
     factores_decisivos: List[str] = Field(..., description="Factores clave")
     confianza_decision: float = Field(..., ge=0, le=1)
     alertas_gemini: List[str] = Field(default_factory=list)
-
-
 
 class FEECalculation(BaseModel):
     """🗓️ Cálculo final de FEE"""
@@ -182,7 +168,6 @@ class FEECalculation(BaseModel):
     tiempo_preparacion: float = Field(..., description="Tiempo picking/packing")
     tiempo_transito: float = Field(..., description="Tiempo en tránsito")
     tiempo_contingencia: float = Field(..., description="Tiempo buffer")
-
 
 class ExplicabilidadCompleta(BaseModel):
     """📊 Explicabilidad completa del proceso"""
@@ -202,7 +187,6 @@ class ExplicabilidadCompleta(BaseModel):
     tiempo_procesamiento_ms: float = Field(..., ge=0)
     warnings: List[str] = Field(default_factory=list)
     debug_info: Dict[str, Any] = Field(default_factory=dict)
-
 
 class PredictionResponse(BaseModel):
     fecha_entrega_estimada: datetime
