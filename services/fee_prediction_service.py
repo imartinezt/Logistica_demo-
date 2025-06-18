@@ -818,70 +818,253 @@ class FEEPredictionService:
                                            cp_info: Dict[str, Any],
                                            external_factors: Dict[str, Any],
                                            request: PredictionRequest) -> List[Dict[str, Any]]:
-        """🗺️ Generación de candidatos con ruteo REAL y logging mejorado"""
+        """🗺️ Generación de candidatos con CONSOLIDACIÓN INTELIGENTE"""
 
         allocation_plan = stock_analysis['allocation_plan']
         target_lat = cp_info['latitud_centro']
         target_lon = cp_info['longitud_centro']
         candidates = []
 
-        logger.info(f"🗺️ Evaluando opciones de entrega para {len(allocation_plan)} asignaciones:")
+        logger.info(f"🗺️ ANÁLISIS DE ESTRATEGIAS DE ENTREGA")
+        logger.info(f"{'=' * 60}")
 
-        for i, plan_item in enumerate(allocation_plan, 1):
+        local_stores = []
+        remote_stores = []
+
+        for plan_item in allocation_plan:
             tienda_origen = await self._get_store_info(plan_item['tienda_id'])
             distance_direct = GeoCalculator.calculate_distance_km(
                 float(tienda_origen['latitud']), float(tienda_origen['longitud']),
                 target_lat, target_lon
             )
 
-            logger.info(f"📏 Opción {i}: {tienda_origen['nombre_tienda']} → CP {request.codigo_postal}")
-            logger.info(f"   📍 Coordenadas tienda: ({tienda_origen['latitud']:.4f}, {tienda_origen['longitud']:.4f})")
-            logger.info(f"   📍 Coordenadas destino: ({target_lat:.4f}, {target_lon:.4f})")
-            logger.info(f"   📏 Distancia directa: {distance_direct:.1f}km")
-            logger.info(f"   📦 Cantidad asignada: {plan_item['cantidad']} unidades")
+            plan_item['store_info'] = tienda_origen
+            plan_item['distance_to_customer'] = distance_direct
 
-            if distance_direct <= 100:  # Stock local
-                logger.info(f"   ✅ RUTA DIRECTA - Distancia local ({distance_direct:.1f}km ≤ 100km)")
-                logger.info(f"   🚛 Usando flota interna Liverpool")
+            if distance_direct <= 50:  # Local CDMX
+                local_stores.append(plan_item)
+            else:  # Remota
+                remote_stores.append(plan_item)
 
+        logger.info(f"📍 Tiendas locales (<50km): {len(local_stores)}")
+        logger.info(f"📍 Tiendas remotas (>50km): {len(remote_stores)}")
+
+        logger.info(f"\n📦 ESTRATEGIA 1: Múltiples paquetes directos")
+        logger.info(f"{'-' * 50}")
+
+        total_cost_direct = 0
+        total_time_direct = 0
+        paquetes_info = []
+
+        for plan_item in allocation_plan:
+            tienda_origen = plan_item['store_info']
+            distance = plan_item['distance_to_customer']
+
+            # Crear candidato directo
+            if distance <= 100:  # Local
                 direct_candidate = await self._create_direct_route_dynamic(
                     plan_item, (target_lat, target_lon), external_factors, request, cp_info
                 )
                 if direct_candidate:
-                    direct_candidate['has_local_stock'] = True
                     candidates.append(direct_candidate)
+                    total_cost_direct += direct_candidate['costo_total_mxn']
+                    total_time_direct = max(total_time_direct, direct_candidate['tiempo_total_horas'])
 
-                    logger.info(f"   📊 Ruta directa creada:")
-                    logger.info(f"      → Tiempo total: {direct_candidate['tiempo_total_horas']:.1f}h")
-                    logger.info(f"      → Costo total: ${direct_candidate['costo_total_mxn']:.0f}")
-                    logger.info(f"      → Probabilidad éxito: {direct_candidate['probabilidad_cumplimiento']:.1%}")
+                    paquetes_info.append({
+                        'origen': tienda_origen['nombre_tienda'],
+                        'cantidad': plan_item['cantidad'],
+                        'costo': direct_candidate['costo_total_mxn'],
+                        'tiempo': direct_candidate['tiempo_total_horas']
+                    })
+            else:  # Remota - usar carrier externo
+                peso_envio = self._calculate_shipment_weight(request, plan_item['cantidad'])
+                carriers = self.repos.fleet.get_best_carriers_for_cp(request.codigo_postal, peso_envio)
 
-            else:
-                logger.info(f"   🔄 RUTEO COMPLEJO - Distancia remota ({distance_direct:.1f}km > 100km)")
-                logger.info(f"   🏭 Requiere CEDIS intermedio para optimizar ruta")
+                if carriers:
+                    best_carrier = carriers[0]
+                    costo_directo = self._calculate_external_fleet_cost(
+                        best_carrier, peso_envio, distance, external_factors
+                    )
+                    tiempo_directo = 72.0  # 3 días típico carrier
 
-                complex_candidate = await self._create_complex_routing_with_cedis(
-                    [plan_item], (target_lat, target_lon), request.codigo_postal, external_factors
+                    total_cost_direct += costo_directo
+                    total_time_direct = max(total_time_direct, tiempo_directo)
+
+                    paquetes_info.append({
+                        'origen': tienda_origen['nombre_tienda'],
+                        'cantidad': plan_item['cantidad'],
+                        'costo': costo_directo,
+                        'tiempo': tiempo_directo,
+                        'carrier': best_carrier['carrier']
+                    })
+
+        logger.info(f"   Paquetes separados: {len(paquetes_info)}")
+        for i, paq in enumerate(paquetes_info, 1):
+            logger.info(f"   {i}. {paq['origen']}: {paq['cantidad']} unidades")
+            logger.info(f"      → Costo: ${paq['costo']:.0f}, Tiempo: {paq['tiempo']:.1f}h")
+            if 'carrier' in paq:
+                logger.info(f"      → Carrier: {paq['carrier']}")
+        logger.info(f"   📊 TOTALES: ${total_cost_direct:.0f}, {total_time_direct:.1f}h máximo")
+
+        # ESTRATEGIA 2: CONSOLIDACIÓN EN TIENDA CDMX
+        if remote_stores and local_stores:
+            logger.info(f"\n📦 ESTRATEGIA 2: Consolidación en tienda CDMX")
+            logger.info(f"{'-' * 50}")
+
+            best_consolidator = max(local_stores, key=lambda x: x['stock_disponible'])
+            consolidator_info = best_consolidator['store_info']
+
+            logger.info(f"   Hub consolidador: {consolidator_info['nombre_tienda']}")
+
+            total_cost_consolidated = 0
+            total_time_consolidated = 0
+            consolidation_steps = []
+
+            # Envíos remotos → consolidador
+            for remote in remote_stores:
+                origen = remote['store_info']
+
+                # tienda remota → tienda consolidadora
+                distance_to_hub = GeoCalculator.calculate_distance_km(
+                    float(origen['latitud']), float(origen['longitud']),
+                    float(consolidator_info['latitud']), float(consolidator_info['longitud'])
                 )
-                if complex_candidate:
-                    complex_candidate['has_local_stock'] = False
-                    candidates.append(complex_candidate)
+                tiempo_transferencia = self._calculate_travel_time_dynamic(
+                    distance_to_hub, 'FI', external_factors
+                )
+                costo_transferencia = distance_to_hub * 8.0
 
-                    logger.info(f"   📊 Ruteo complejo creado:")
-                    logger.info(f"      → Tiempo total: {complex_candidate['tiempo_total_horas']:.1f}h")
-                    logger.info(f"      → Costo total: ${complex_candidate['costo_total_mxn']:.0f}")
-                    logger.info(f"      → Segmentos: {len(complex_candidate['segmentos'])}")
-                    logger.info(f"      → Probabilidad éxito: {complex_candidate['probabilidad_cumplimiento']:.1%}")
+                total_cost_consolidated += costo_transferencia
+                total_time_consolidated = max(total_time_consolidated, tiempo_transferencia + 4)
 
-        logger.info(f"🗺️ Resumen de candidatos generados:")
-        logger.info(f"   📊 Total candidatos: {len(candidates)}")
+                consolidation_steps.append({
+                    'tipo': 'transferencia',
+                    'origen': origen['nombre_tienda'],
+                    'destino': consolidator_info['nombre_tienda'],
+                    'cantidad': remote['cantidad'],
+                    'distancia': distance_to_hub,
+                    'tiempo': tiempo_transferencia,
+                    'costo': costo_transferencia
+                })
 
-        for i, candidate in enumerate(candidates, 1):
-            logger.info(f"   {i}. {candidate.get('origen_principal', 'N/A')} → Cliente")
-            logger.info(f"      Tipo: {candidate['tipo_ruta']}")
-            logger.info(f"      Tiempo: {candidate['tiempo_total_horas']:.1f}h")
-            logger.info(f"      Costo: ${candidate['costo_total_mxn']:.0f}")
-            logger.info(f"      Stock local: {'Sí' if candidate.get('has_local_stock', False) else 'No'}")
+                logger.info(f"   → {origen['nombre_tienda']} → {consolidator_info['nombre_tienda']}")
+                logger.info(f"     {remote['cantidad']} unidades, {distance_to_hub:.0f}km")
+                logger.info(f"     Costo: ${costo_transferencia:.0f}, Tiempo: {tiempo_transferencia:.1f}h")
+
+            # Entrega consolidada → cliente
+            cantidad_total = sum(item['cantidad'] for item in allocation_plan)
+            peso_consolidado = self._calculate_shipment_weight(request, cantidad_total)
+            distance_final = best_consolidator['distance_to_customer']
+
+            if distance_final <= 20:  # Última milla
+                costo_final = 150  # Tarifa plana última milla
+                tiempo_final = 4  # Mismo día
+                carrier_final = "Liverpool Express"
+            else:
+                carriers = self.repos.fleet.get_best_carriers_for_cp(request.codigo_postal, peso_consolidado)
+                if carriers:
+                    best_carrier = carriers[0]
+                    costo_final = best_carrier['costo_base_mxn']
+                    tiempo_final = 24  # Siguiente día
+                    carrier_final = best_carrier['carrier']
+                else:
+                    costo_final = 200
+                    tiempo_final = 24
+                    carrier_final = "Externo"
+
+            total_cost_consolidated += costo_final
+            total_time_consolidated += tiempo_final
+
+            logger.info(f"   → {consolidator_info['nombre_tienda']} → Cliente")
+            logger.info(f"     {cantidad_total} unidades consolidadas")
+            logger.info(f"     Costo: ${costo_final:.0f}, Tiempo: {tiempo_final:.1f}h")
+            logger.info(f"     Carrier: {carrier_final}")
+            logger.info(f"   📊 TOTALES: ${total_cost_consolidated:.0f}, {total_time_consolidated:.1f}h total")
+
+            if total_cost_consolidated < total_cost_direct * 0.8:
+                consolidated_candidate = {
+                    'ruta_id': f"consolidated_{consolidator_info['tienda_id']}",
+                    'tipo_ruta': 'consolidada',
+                    'origen_principal': f"Múltiples → {consolidator_info['nombre_tienda']} → Cliente",
+                    'estrategia': 'consolidacion_hub',
+                    'hub_consolidador': consolidator_info['nombre_tienda'],
+                    'segmentos': consolidation_steps,
+                    'tiempo_total_horas': total_time_consolidated,
+                    'costo_total_mxn': total_cost_consolidated,
+                    'distancia_total_km': sum(s['distancia'] for s in consolidation_steps) + distance_final,
+                    'probabilidad_cumplimiento': 0.75,
+                    'cantidad_cubierta': cantidad_total,
+                    'paquetes': 1,
+                    'ahorro_vs_directo': total_cost_direct - total_cost_consolidated,
+                    'factores_aplicados': ['consolidacion',
+                                           f'ahorro_${total_cost_direct - total_cost_consolidated:.0f}']
+                }
+                candidates.append(consolidated_candidate)
+
+                logger.info(f"\n   ✅ CONSOLIDACIÓN VIABLE: Ahorro ${total_cost_direct - total_cost_consolidated:.0f}")
+
+        # ESTRATEGIA 3: HÍBRIDA (locales directo, remotas por carrier)
+        if remote_stores and local_stores:
+            logger.info(f"\n📦 ESTRATEGIA 3: Híbrida (locales FI, remotas carrier)")
+            logger.info(f"{'-' * 50}")
+
+            total_cost_hybrid = 0
+            total_time_hybrid = 0
+            hybrid_info = []
+
+            for local in local_stores:
+                direct_local = await self._create_direct_route_dynamic(
+                    local, (target_lat, target_lon), external_factors, request, cp_info
+                )
+                if direct_local:
+                    total_cost_hybrid += direct_local['costo_total_mxn']
+                    total_time_hybrid = max(total_time_hybrid, direct_local['tiempo_total_horas'])
+                    hybrid_info.append({
+                        'tipo': 'local_FI',
+                        'origen': local['store_info']['nombre_tienda'],
+                        'cantidad': local['cantidad'],
+                        'costo': direct_local['costo_total_mxn']
+                    })
+
+            for remote in remote_stores:
+                peso_envio = self._calculate_shipment_weight(request, remote['cantidad'])
+                # Buscar carrier express (no el más barato)
+                carriers = self.repos.fleet.get_best_carriers_for_cp(request.codigo_postal, peso_envio)
+
+                express_carrier = None
+                for carrier in carriers:
+                    if 'Express' in carrier.get('tipo_servicio', '') or carrier.get('tiempo_entrega_dias_habiles',
+                                                                                    '5') <= '2':
+                        express_carrier = carrier
+                        break
+
+                if express_carrier:
+                    costo_express = float(express_carrier['costo_base_mxn']) * 1.3  # Premium
+                    tiempo_express = 48  # 2 días
+
+                    total_cost_hybrid += costo_express
+                    total_time_hybrid = max(total_time_hybrid, tiempo_express)
+
+                    hybrid_info.append({
+                        'tipo': 'remota_express',
+                        'origen': remote['store_info']['nombre_tienda'],
+                        'cantidad': remote['cantidad'],
+                        'costo': costo_express,
+                        'carrier': express_carrier['carrier']
+                    })
+
+            logger.info(f"   Envíos locales FI: {len([h for h in hybrid_info if h['tipo'] == 'local_FI'])}")
+            logger.info(f"   Envíos express: {len([h for h in hybrid_info if h['tipo'] == 'remota_express'])}")
+            logger.info(f"   📊 TOTALES: ${total_cost_hybrid:.0f}, {total_time_hybrid:.1f}h máximo")
+
+        logger.info(f"\n🎯 RESUMEN DE ESTRATEGIAS:")
+        logger.info(f"{'=' * 60}")
+        logger.info(f"1. MÚLTIPLES PAQUETES: ${total_cost_direct:.0f} / {total_time_direct:.1f}h")
+        if 'total_cost_consolidated' in locals():
+            logger.info(f"2. CONSOLIDACIÓN HUB: ${total_cost_consolidated:.0f} / {total_time_consolidated:.1f}h")
+            logger.info(f"   → Ahorro: ${total_cost_direct - total_cost_consolidated:.0f}")
+        if 'total_cost_hybrid' in locals():
+            logger.info(f"3. HÍBRIDA: ${total_cost_hybrid:.0f} / {total_time_hybrid:.1f}h")
 
         return candidates
 
