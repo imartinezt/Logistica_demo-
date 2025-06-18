@@ -4,9 +4,9 @@ from typing import Dict, Any
 from fastapi import APIRouter, HTTPException, Depends, status
 
 from config.settings import settings
-from models.schemas import PredictionRequest, PredictionResponse
-from services.data.repositories import OptimizedRepositories  # ✅ CORREGIDO
-from services.fee_prediction_service import FEEPredictionService  # ✅ CORREGIDO
+from models.schemas import PredictionRequest
+from services.data.repositories import OptimizedRepositories
+from services.fee_prediction_service import FEEPredictionService
 from utils.logger import logger
 
 router = APIRouter(prefix="/api/v1", tags=["🎯 Liverpool FEE System"])
@@ -27,12 +27,12 @@ def get_fee_service() -> FEEPredictionService:
     return _fee_service
 
 
-@router.post("/fee/predict", response_model=Dict[str, Any])  # Cambiar tipo de respuesta
+@router.post("/fee/predict", response_model=Dict[str, Any])
 async def predict_delivery_fee(
         request: PredictionRequest,
         service: FEEPredictionService = Depends(get_fee_service)
 ):
-    """🎯 PREDICCIÓN INTELIGENTE FEE - RESPUESTA SIMPLIFICADA CON DATOS CSV REALES"""
+    """ PREDICCIÓN FEE"""
 
     start_time = time.time()
 

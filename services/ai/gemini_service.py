@@ -11,7 +11,7 @@ from utils.logger import logger
 
 
 class VertexAIModelSingleton:
-    """Singleton para Gemini - MANTENER PARA COMPATIBILIDAD"""
+    """Singleton"""
     _model = None
     _chat_session = None
 
@@ -35,7 +35,7 @@ class VertexAIModelSingleton:
 
 
 class GeminiLogisticsDecisionEngine:
-    """Motor de decisión logística con Gemini - CLASE ORIGINAL MANTENIDA"""
+    """Motor de decisión logística con Gemini """
 
     def __init__(self):
         self.model = VertexAIModelSingleton.get_model()
@@ -57,7 +57,6 @@ class GeminiLogisticsDecisionEngine:
                                    top_candidates: List[Dict[str, Any]],
                                    request_context: Dict[str, Any],
                                    external_factors: Dict[str, Any]) -> Dict[str, Any]:
-        """Selección final de ruta óptima por Gemini"""
 
         if not top_candidates:
             raise ValueError("No hay candidatos para evaluar")
@@ -165,7 +164,7 @@ IMPORTANTE: Prioriza PROBABILIDAD y TIEMPO sobre costo. Selecciona el candidato 
 
     @staticmethod
     def _parse_json_response(response_text: str) -> Dict[str, Any]:
-        """Parser robusto mejorado para respuestas JSON de Gemini"""
+        """Parser JSON"""
 
         try:
             clean_text = response_text.strip()
@@ -214,7 +213,7 @@ IMPORTANTE: Prioriza PROBABILIDAD y TIEMPO sobre costo. Selecciona el candidato 
 
     @staticmethod
     def _fallback_decision(candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Decisión fallback cuando Gemini falla"""
+        """ fallback cuando Gemini falla"""
 
         if not candidates:
             raise ValueError("No hay candidatos para fallback")

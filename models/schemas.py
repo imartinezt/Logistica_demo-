@@ -1,8 +1,8 @@
-from pydantic import BaseModel, Field, validator
 from datetime import datetime, time
-from typing import Optional, List, Dict, Any, Union
 from enum import Enum
+from typing import Optional, List, Dict, Any
 
+from pydantic import BaseModel, Field, field_validator
 
 
 class TipoEntregaEnum(str, Enum):
@@ -22,25 +22,33 @@ class EstadoRutaEnum(str, Enum):
     CONDICIONAL = "CONDICIONAL"
 
 class PredictionRequest(BaseModel):
-    """📥 Request para predicción FEE"""
-    codigo_postal: str = Field(..., min_length=5, max_length=5,
-                               description="Código postal destino")
-    sku_id: str = Field(..., description="ID del producto")
-    cantidad: int = Field(..., ge=1, le=100,
-                          description="Cantidad a entregar")
+    """ Request FEE"""
+    codigo_postal: str = Field(
+        ...,
+        pattern=r"^\d{5}$",  # ← solo 5 dígitos
+        description="Código postal destino (5 dígitos)"
+    )
+    sku_id: str = Field(
+        ...,
+        description="ID del producto"
+    )
+    cantidad: int = Field(
+        ...,
+        ge=1, le=100,
+        description="Cantidad a entregar"
+    )
     fecha_compra: Optional[datetime] = Field(
         default_factory=datetime.now,
         description="Fecha y hora exacta de compra"
     )
-
-    @validator('codigo_postal')
-    def validate_cp(cls, v):
+    @field_validator("codigo_postal")
+    def solo_digitos(cls, v: str) -> str:
         if not v.isdigit():
-            raise ValueError('Código postal debe ser numérico')
+            raise ValueError("Código postal debe contener solo dígitos")
         return v
 
 class UbicacionStock(BaseModel):
-    """📦 Stock en una ubicación específica"""
+    """ Stock en una ubicación específica"""
     ubicacion_id: str = Field(..., description="ID de tienda o CEDIS")
     ubicacion_tipo: str = Field(..., description="TIENDA | CEDIS")
     nombre_ubicacion: str = Field(..., description="Nombre legible")
@@ -102,36 +110,6 @@ class RutaCompleta(BaseModel):
     probabilidad_cumplimiento: float = Field(..., ge=0, le=1)
     factores_riesgo: List[str] = Field(default_factory=list)
 
-class FactoresExternos(BaseModel):
-    """🌤️ Factores externos detectados y calculados"""
-    fecha_analisis: datetime = Field(..., description="Fecha del análisis")
-
-    # Eventos temporales
-    eventos_detectados: List[str] = Field(default_factory=list)
-    factor_demanda: float = Field(default=1.0, ge=0.5, le=5.0)
-    es_temporada_alta: bool = Field(default=False)
-
-    # Clima
-    condicion_clima: str = Field(default="Templado")
-    temperatura_celsius: int = Field(default=22, ge=-10, le=50)
-    probabilidad_lluvia: int = Field(default=30, ge=0, le=100)
-    viento_kmh: Optional[int] = Field(None, ge=0, le=200)
-
-    # Tráfico y logística
-    trafico_nivel: str = Field(default="Moderado")
-    impacto_tiempo_extra_horas: float = Field(default=0.0, ge=0)
-    impacto_costo_extra_pct: float = Field(default=0.0, ge=0)
-
-    # Factores de zona
-    zona_seguridad: str = Field(default="Media")
-    restricciones_vehiculares: List[str] = Field(default_factory=list)
-
-    # Criticidad general
-    criticidad_logistica: str = Field(
-        default="Normal",
-        description="Baja|Normal|Media|Alta|Crítica"
-    )
-
 class CandidatoRuta(BaseModel):
     """🎯 Candidato generado por LightGBM"""
     ruta: RutaCompleta = Field(..., description="Ruta completa")
@@ -164,40 +142,6 @@ class FEECalculation(BaseModel):
     tipo_entrega: TipoEntregaEnum = Field(..., description="Tipo de entrega")
     tiempo_total_horas: float = Field(..., ge=0, description="Tiempo total real")
 
-    # Desglose de tiempos
     tiempo_preparacion: float = Field(..., description="Tiempo picking/packing")
     tiempo_transito: float = Field(..., description="Tiempo en tránsito")
     tiempo_contingencia: float = Field(..., description="Tiempo buffer")
-
-class ExplicabilidadCompleta(BaseModel):
-    """📊 Explicabilidad completa del proceso"""
-
-
-    request_procesado: PredictionRequest = Field(..., description="Request original")
-    factores_externos: FactoresExternos = Field(..., description="Factores detectados")
-    split_inventory: Optional[SplitInventory] = Field(None)
-
-    candidatos_lightgbm: List[CandidatoRuta] = Field(
-        ..., description="Candidatos generados por ML"
-    )
-    decision_gemini: DecisionGemini = Field(
-        ..., description="Decisión final de Gemini"
-    )
-    fee_calculation: FEECalculation = Field(..., description="Cálculo FEE")
-    tiempo_procesamiento_ms: float = Field(..., ge=0)
-    warnings: List[str] = Field(default_factory=list)
-    debug_info: Dict[str, Any] = Field(default_factory=dict)
-
-class PredictionResponse(BaseModel):
-    fecha_entrega_estimada: datetime
-    rango_horario: Dict[str, str]
-    ruta_seleccionada: RutaCompleta
-    tipo_entrega: TipoEntregaEnum
-    carrier_principal: str
-    costo_envio_mxn: float
-    probabilidad_cumplimiento: float
-    confianza_prediccion: float
-    explicabilidad: ExplicabilidadCompleta
-    explicabilidad_extendida: Optional[Dict[str, Any]] = None  # ✅ ESTE CAMPO
-    timestamp_response: Optional[datetime] = None  # ✅ ESTE CAMPO
-    version_sistema: Optional[str] = None  # ✅ ESTE CAMPO

@@ -35,10 +35,8 @@ class DataManager:
         return lon_val
 
     def _load_all_csvs(self):
-        """📂 Carga Y PRE-PROCESA todos los CSVs optimizados"""
+        """📂 Carga Y PRE-PROCESA"""
         start_time = time.time()
-
-        # CSV con nombres exactos que mencionaste
         csv_files = {
             'tiendas': 'liverpool_tiendas_completo.csv',
             'productos': 'productos_liverpool_50.csv',
@@ -52,24 +50,19 @@ class DataManager:
 
         for key, filename in csv_files.items():
             df = pl.read_csv(self.data_dir / filename)
-
-            # PRE-PROCESAR según tus especificaciones
             if key == 'tiendas':
-                # Corregir coordenadas corruptas AUTOMÁTICAMENTE
                 df = df.with_columns([
                     pl.col('latitud').map_elements(self._fix_lat, return_dtype=pl.Float64),
                     pl.col('longitud').map_elements(self._fix_lon).alias('longitud')
                 ])
 
             elif key == 'cedis':
-                # Corregir coordenadas CEDIS también
                 df = df.with_columns([
                     pl.col('latitud').map_elements(self._fix_lat, return_dtype=pl.Float64),
                     pl.col('longitud').map_elements(self._fix_lon).alias('longitud')
                 ])
 
             elif key == 'productos':
-                # Pre-procesar tiendas_disponibles como lista
                 df = df.with_columns([
                     pl.col('tiendas_disponibles').str.split(',').alias('tiendas_list')
                 ])
@@ -77,7 +70,7 @@ class DataManager:
             self._data[key] = df
 
     def get_data(self, key: str) -> pl.DataFrame:
-        """📊 Obtiene DataFrame desde memoria"""
+        """ Obtiene DataFrame desde memoria"""
         return self._data.get(key, pl.DataFrame())
 
 
@@ -88,7 +81,7 @@ class OptimizedProductRepository:
         self.data_manager = data_manager
 
     def get_product_by_sku(self, sku_id: str) -> Optional[Dict[str, Any]]:
-        """🔍 Busca producto por SKU"""
+        """ Busca producto por SKU"""
         df = self.data_manager.get_data('productos')
         result = df.filter(pl.col('sku_id') == sku_id)
 
@@ -102,31 +95,31 @@ class OptimizedProductRepository:
 
 
 class OptimizedStoreRepository:
-    """🏪 Repositorio de tiendas optimizado"""
+    """ Repositorio de tiendas """
 
     def __init__(self, data_manager: DataManager):
         self.data_manager = data_manager
 
     def find_stores_by_postal_range(self, codigo_postal: str) -> List[Dict[str, Any]]:
-        """📍 Encuentra tiendas por rango de código postal"""
-        # 1. Primero buscar en qué rango está el CP
+        """Encuentra tiendas por rango de código postal
+        1.- Primero buscar en qué rango está el CP
+        2.- Buscar tiendas en el mismo estado/alcaldía
+        3.- Calcula la distancia
+        4.- Hace el ordenamiento de las distancias
+        """
         cp_info = self._get_postal_info(codigo_postal)
         if not cp_info:
             logger.warning(f"❌ CP no encontrado: {codigo_postal}")
             return []
 
-        # 2. Buscar tiendas en el mismo estado/alcaldía
         target_state = cp_info['estado_alcaldia']
         tiendas_df = self.data_manager.get_data('tiendas')
-
-        # Filtrar por estado/alcaldía similar
         state_matches = tiendas_df.filter(
             pl.col('estado').str.contains(target_state.split()[0]) |
             pl.col('alcaldia_municipio').str.contains(target_state.split()[0])
         )
 
         if state_matches.height == 0:
-            # Fallback: buscar en CDMX o Estado de México
             fallback_states = ['Ciudad de México', 'Estado de México']
             for state in fallback_states:
                 state_matches = tiendas_df.filter(pl.col('estado').str.contains(state))
@@ -135,7 +128,6 @@ class OptimizedStoreRepository:
 
         stores = state_matches.to_dicts()
 
-        # 3. Calcular distancias reales
         target_lat = cp_info['latitud_centro']
         target_lon = cp_info['longitud_centro']
 
@@ -151,8 +143,6 @@ class OptimizedStoreRepository:
                 stores_with_distance.append(store)
             except Exception as e:
                 logger.warning(f"⚠️ Error calculando distancia para {store.get('tienda_id')}: {e}")
-
-        # Ordenar por distancia
         stores_with_distance.sort(key=lambda x: x['distancia_km'])
 
         logger.info(f"📍 Tiendas encontradas para {codigo_postal}: {len(stores_with_distance)}")
@@ -162,9 +152,8 @@ class OptimizedStoreRepository:
         return stores_with_distance
 
     def _get_postal_info(self, codigo_postal: str) -> Optional[Dict[str, Any]]:
-        """🔍 Obtiene información del código postal"""
-        df = self.data_manager.get_data('codigos_postales')
-        cp_int = int(codigo_postal)
+        """ Obtiene información del código postal"""
+        cp_int, df = self.obtener_cp(codigo_postal)
 
         for row in df.to_dicts():
             rango_cp = row.get('rango_cp', '')
@@ -175,8 +164,6 @@ class OptimizedStoreRepository:
                         return row
                 except ValueError:
                     continue
-
-        # Fallback: usar CDMX
         return {
             'rango_cp': codigo_postal,
             'estado_alcaldia': 'Ciudad de México',
@@ -187,6 +174,11 @@ class OptimizedStoreRepository:
             'tiempo_entrega_base_horas': '2-4'
         }
 
+    def obtener_cp(self, codigo_postal):
+        df = self.data_manager.get_data('codigos_postales')
+        cp_int = int(codigo_postal)
+        return cp_int, df
+
 
 class OptimizedStockRepository:
     """📦 Repositorio de stock optimizado"""
@@ -196,7 +188,7 @@ class OptimizedStockRepository:
 
     def get_stock_for_stores_and_sku(self, sku_id: str, store_ids: List[str],
                                      cantidad_requerida: int) -> List[Dict[str, Any]]:
-        """📊 Obtiene stock específico para tiendas y SKU"""
+        """Obtiene stock para tiendas y SKU"""
         stock_df = self.data_manager.get_data('stock')
 
         # Filtrar por SKU y tiendas
@@ -688,34 +680,28 @@ class OptimizedStockRepository:
 
 
 class OptimizedExternalFactorsRepository:
-    """🌤️ Repositorio de factores externos optimizado - MEJORADO EVENTOS"""
+    """Repositorio de factores externos optimizado - MEJORADO EVENTOS"""
 
     def __init__(self, data_manager: DataManager):
         self.data_manager = data_manager
 
     def get_factors_for_date_and_cp(self, fecha: datetime, codigo_postal: str) -> Dict[str, Any]:
-        """🎯 Obtiene factores externos para fecha y CP específicos - LÓGICA MEJORADA"""
+        """Obtiene factores externos para fecha y CP específicos - LÓGICA MEJORADA"""
 
         fecha_str = fecha.date().isoformat()
         df = self.data_manager.get_data('factores_externos')
-
-        # 1. Buscar fecha exacta primero
         exact_match = df.filter(pl.col('fecha') == fecha_str)
 
         if exact_match.height > 0:
             result = exact_match.to_dicts()[0]
             logger.info(f"📅 Factores encontrados para fecha exacta: {fecha_str}")
             return self._process_factors(result, fecha, codigo_postal)
-
-        # 2. Buscar fechas cercanas con LÓGICA INTELIGENTE
         return self._get_intelligent_factors(fecha, codigo_postal, df)
 
     def _get_intelligent_factors(self, fecha: datetime, codigo_postal: str, df: pl.DataFrame) -> Dict[str, Any]:
-        """🧠 Obtiene factores con lógica inteligente para eventos"""
+        """Obtiene factores con lógica inteligente para eventos"""
 
         fecha_target = fecha.date()
-
-        # Convertir todas las fechas del CSV para comparación
         eventos_disponibles = []
         for row in df.to_dicts():
             try:
@@ -733,23 +719,18 @@ class OptimizedExternalFactorsRepository:
         if not eventos_disponibles:
             logger.warning(f"⚠️ No se encontraron eventos válidos, usando factores estacionales")
             return self._calculate_seasonal_factors(fecha, codigo_postal)
-
-        # Ordenar por cercanía
         eventos_disponibles.sort(key=lambda x: abs(x['dias_diferencia']))
 
-        # NUEVA LÓGICA: Solo usar eventos si son válidos temporalmente
         for evento in eventos_disponibles:
             dias_diff = evento['dias_diferencia']
             evento_data = evento['data']
             evento_nombre = evento_data.get('evento_detectado', 'Normal')
 
-            # ✅ REGLAS INTELIGENTES POR TIPO DE EVENTO
             if self._is_event_still_valid(evento_nombre, dias_diff, fecha_target):
                 fecha_csv = evento['fecha_csv']
                 logger.info(f"📅 Usando evento válido: {evento_nombre} de {fecha_csv} (diferencia: {dias_diff} días)")
                 return self._process_factors(evento_data, fecha, codigo_postal)
 
-        # Si no encuentra eventos válidos, usar factores estacionales
         logger.info(f"📅 No hay eventos válidos cerca de {fecha_target}, calculando factores estacionales")
         return self._calculate_seasonal_factors(fecha, codigo_postal)
 
@@ -759,7 +740,6 @@ class OptimizedExternalFactorsRepository:
 
         # Eventos FUTUROS - solo válidos si son eventos de preparación/anticipación
         if dias_diferencia < 0:
-            # Eventos que requieren preparación anticipada (máximo 3 días antes)
             eventos_anticipacion = [
                 'Buen_Fin', 'Black_Friday', 'Cyber_Monday', 'Hot_Sale',
                 'Navidad', 'Nochebuena', 'Semana_Santa'
@@ -769,21 +749,17 @@ class OptimizedExternalFactorsRepository:
                 if evento_prep in evento_nombre and abs(dias_diferencia) <= 3:
                     return True
 
-            # Eventos estacionales NO deben aplicarse antes de tiempo
             eventos_estacionales = [
                 'Inicio_Verano', 'Inicio_Invierno', 'Inicio_Primavera', 'Inicio_Otoño'
             ]
 
             for evento_estacional in eventos_estacionales:
                 if evento_estacional in evento_nombre:
-                    return False  # No aplicar eventos estacionales futuros
+                    return False
 
-            return False  # Por defecto, no usar eventos futuros
+            return False
 
-        # Para eventos PASADOS, aplicar reglas MÁS ESTRICTAS
         if dias_diferencia > 0:
-
-            # Eventos de un solo día - válidos solo el MISMO DÍA
             eventos_un_dia = [
                 'Dia_Padre', 'Dia_Madres', 'San_Valentin', 'Dia_Mujer_8M',
                 'Dia_Trabajo', 'Independencia_Mexico', 'Dia_Muertos', 'Halloween',
@@ -794,7 +770,6 @@ class OptimizedExternalFactorsRepository:
                 if evento_corto in evento_nombre and dias_diferencia == 0:
                     return True
 
-            # Eventos de temporada - válidos más tiempo
             eventos_temporada = [
                 'Hot_Sale', 'Buen_Fin', 'Black_Friday', 'Cyber_Monday',
                 'Semana_Santa', 'Posadas', 'Temporada_Lluvias'
@@ -804,7 +779,6 @@ class OptimizedExternalFactorsRepository:
                 if evento_largo in evento_nombre and dias_diferencia <= 5:
                     return True
 
-            # Eventos climáticos/estacionales - válidos hasta 10 días
             eventos_climaticos = [
                 'Inicio_Primavera', 'Inicio_Verano', 'Inicio_Otoño', 'Inicio_Invierno',
                 'Temporada_Huracanes', 'Fin_Temporada_Huracanes'
@@ -817,12 +791,11 @@ class OptimizedExternalFactorsRepository:
         return False
 
     def _calculate_seasonal_factors(self, fecha: datetime, codigo_postal: str) -> Dict[str, Any]:
-        """🌤️ Calcula factores basados en época del año cuando no hay eventos específicos"""
+        """Calcula factores basados en época del año cuando no hay eventos específicos"""
 
         mes = fecha.month
         dia = fecha.day
 
-        # Determinar época y condiciones base
         if mes in [12, 1, 2]:  # Invierno
             epoca = "invierno"
             clima_base = "Invierno_Frio"
@@ -851,30 +824,28 @@ class OptimizedExternalFactorsRepository:
             trafico_base = "Moderado"
             criticidad_base = "Normal"
 
-        # Detectar efectos residuales de eventos conocidos
         evento_calculado = "Normal"
 
-        # Efectos post-eventos específicos MÁS REALISTAS
         if mes == 6:
-            if dia == 16:  # Solo 1 día después del Día del Padre
+            if dia == 16:
                 evento_calculado = "Post_Dia_Padre"
-                factor_demanda_base = 1.05  # Efecto mínimo
+                factor_demanda_base = 1.05
                 criticidad_base = "Baja"
-            elif 17 <= dia <= 19:  # 2-4 días después - casi normal
+            elif 17 <= dia <= 19:
                 evento_calculado = "Normal"
                 factor_demanda_base = 1.0
 
         elif mes == 5:
-            if dia == 11:  # Solo 1 día después del Día de las Madres
+            if dia == 11:
                 evento_calculado = "Post_Dia_Madres"
                 factor_demanda_base = 1.1
                 criticidad_base = "Baja"
-            elif 12 <= dia <= 15:  # Ya casi normal
+            elif 12 <= dia <= 15:
                 evento_calculado = "Normal"
                 factor_demanda_base = 1.0
 
         elif mes == 2:
-            if dia == 15:  # Solo el día después de San Valentín
+            if dia == 15:
                 evento_calculado = "Post_San_Valentin"
                 factor_demanda_base = 1.02
             elif dia >= 16:  # Ya normal
@@ -882,7 +853,7 @@ class OptimizedExternalFactorsRepository:
                 factor_demanda_base = 1.0
 
         elif mes == 12:
-            if 26 <= dia <= 31:  # Post Navidad
+            if 26 <= dia <= 31:
                 evento_calculado = "Post_Navidad"
                 factor_demanda_base = 0.8  # Baja demanda post navidad
                 trafico_base = "Bajo"
@@ -896,9 +867,8 @@ class OptimizedExternalFactorsRepository:
         elif mes == 11:
             if 18 <= dia <= 25:  # Post Buen Fin
                 evento_calculado = "Post_Buen_Fin"
-                factor_demanda_base = 1.2  # Aún hay demanda residual
+                factor_demanda_base = 1.2
 
-        # Ajustes por época específica sin eventos
         elif mes == 7 and 15 <= dia <= 31:  # Mitad de verano
             evento_calculado = "Temporada_Vacaciones_Verano"
             factor_demanda_base = 1.3
@@ -912,10 +882,7 @@ class OptimizedExternalFactorsRepository:
 
         logger.info(f"🌤️ Calculando factores estacionales para {epoca}: {evento_calculado}")
 
-        # Obtener info del CP para zona de seguridad
         cp_info = self._get_cp_info_for_factors(codigo_postal)
-
-        # Calcular impactos
         impacto_tiempo = self._calculate_time_impact_from_demand(factor_demanda_base, trafico_base)
         impacto_costo = self._calculate_cost_impact_from_demand(factor_demanda_base, evento_calculado)
 
@@ -937,10 +904,8 @@ class OptimizedExternalFactorsRepository:
 
     @staticmethod
     def _calculate_time_impact_from_demand(factor_demanda: float, trafico_nivel: str) -> float:
-        """⏱️ Calcula impacto en tiempo desde factor de demanda"""
+        """Calcula impacto en tiempo desde factor de demanda"""
         base_impact = max(0, (factor_demanda - 1.0) * 2.0)
-
-        # Ajuste por tráfico
         trafico_multiplier = {
             'Bajo': 0.5,
             'Moderado': 1.0,
@@ -953,10 +918,9 @@ class OptimizedExternalFactorsRepository:
 
     @staticmethod
     def _calculate_cost_impact_from_demand(factor_demanda: float, evento: str) -> float:
-        """💰 Calcula impacto en costo desde factor de demanda"""
+        """Calcula impacto en costo desde factor de demanda"""
         base_impact = max(0, (factor_demanda - 1.0) * 15)
 
-        # Eventos específicos que incrementan costos
         eventos_premium = ['Post_Navidad', 'Post_Buen_Fin', 'Regreso_Clases']
         if any(premium in evento for premium in eventos_premium):
             base_impact += 10.0
@@ -964,7 +928,7 @@ class OptimizedExternalFactorsRepository:
         return round(min(50.0, base_impact), 1)
 
     def _get_cp_info_for_factors(self, codigo_postal: str) -> Dict[str, Any]:
-        """📍 Obtiene información del CP para factores externos"""
+        """Obtiene información del CP para factores externos"""
         try:
             cp_df = self.data_manager.get_data('codigos_postales')
             cp_int = int(codigo_postal)
@@ -979,15 +943,14 @@ class OptimizedExternalFactorsRepository:
                     except ValueError:
                         continue
 
-            # Fallback
+            # TODO ESTO ES -> Fallback ( TENGO QUE RECORDAR QUE DEBO USAR DATA REAL )
             return {'zona_seguridad': 'Verde', 'cobertura_liverpool': True}
         except:
             return {'zona_seguridad': 'Verde', 'cobertura_liverpool': True}
 
     def _process_factors(self, raw_data: Dict[str, Any], fecha: datetime, codigo_postal: str) -> Dict[str, Any]:
-        """🔄 Procesa datos crudos del CSV a formato estándar - CORREGIDO"""
+        """ Procesa datos crudos del CSV a formato estándar - CORREGIDO"""
 
-        # ✅ CORRECCIÓN: Limpiar factor_demanda que puede venir como string "1/08/2025"
         factor_demanda_raw = raw_data.get('factor_demanda', 1.0)
 
         if isinstance(factor_demanda_raw, str):
@@ -997,7 +960,6 @@ class OptimizedExternalFactorsRepository:
                 try:
                     partes = factor_demanda_raw.split('/')
                     if len(partes) >= 2:
-                        # Tomar primer número como entero y segundo como decimal
                         entero = int(partes[0])
                         decimal = int(partes[1][:2])  # Tomar solo primeros 2 dígitos del mes
                         factor_demanda = float(f"{entero}.{decimal:02d}")
@@ -1007,22 +969,17 @@ class OptimizedExternalFactorsRepository:
                     logger.warning(f"⚠️ Error procesando factor_demanda: {factor_demanda_raw}, usando 1.0")
                     factor_demanda = 1.0
             else:
-                # String normal, convertir a float
                 try:
                     factor_demanda = float(factor_demanda_raw)
                 except:
                     factor_demanda = 1.0
         else:
-            # Ya es número
             try:
                 factor_demanda = float(factor_demanda_raw)
             except:
                 factor_demanda = 1.0
 
-        # Obtener info del CP para zona de seguridad
         cp_info = self._get_cp_info_for_factors(codigo_postal)
-
-        # Calcular impactos usando métodos existentes (mantener compatibilidad)
         impacto_tiempo = self._calculate_time_impact(factor_demanda, raw_data)
         impacto_costo = self._calculate_cost_impact(factor_demanda, raw_data)
 
@@ -1048,10 +1005,8 @@ class OptimizedExternalFactorsRepository:
 
     @staticmethod
     def _calculate_time_impact(factor_demanda: float, factors: Dict[str, Any]) -> float:
-        """⏱️ Calcula impacto en tiempo (método original)"""
+        """ Calcula impacto en tiempo """
         base_impact = max(0, (factor_demanda - 1.0) * 2.0)
-
-        # Eventos críticos
         evento = factors.get('evento_detectado', '')
         if any(critical in evento for critical in ['Navidad', 'Nochebuena', 'Buen_Fin']):
             base_impact += 3.0
@@ -1060,10 +1015,8 @@ class OptimizedExternalFactorsRepository:
 
     @staticmethod
     def _calculate_cost_impact(factor_demanda: float, factors: Dict[str, Any]) -> float:
-        """💰 Calcula impacto en costo (método original)"""
+        """Calcula impacto en costo"""
         base_impact = max(0, (factor_demanda - 1.0) * 15)
-
-        # Eventos premium
         evento = factors.get('evento_detectado', '')
         if any(premium in evento for premium in ['Navidad', 'Nochebuena', 'Buen_Fin']):
             base_impact += 20.0
@@ -1078,11 +1031,9 @@ class OptimizedFleetRepository:
         self.data_manager = data_manager
 
     def get_best_carriers_for_cp(self, codigo_postal: str, peso_kg: float) -> List[Dict[str, Any]]:
-        """🚛 Obtiene mejores carriers para CP y peso"""
+        """Obtiene mejores carriers para CP y peso"""
         df = self.data_manager.get_data('flota_externa')
         cp_int = int(codigo_postal)
-
-        # Filtrar carriers disponibles
         available = df.filter(
             (pl.col('activo') == True) &
             (pl.col('zona_cp_inicio') <= cp_int) &
