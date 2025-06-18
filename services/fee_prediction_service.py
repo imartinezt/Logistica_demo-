@@ -213,7 +213,8 @@ class FEEPredictionService:
 
         # Calcular FEE usando lógica existente
         fee_calculation = self._calculate_dynamic_fee(
-            selected_route, request, external_factors, cp_info
+            selected_route, request, external_factors, cp_info,
+            stock_analysis=stock_analysis  # NUEVO: Pasar stock_analysis
         )
 
         # Construir candidatos simplificados con datos CSV reales
@@ -1695,22 +1696,23 @@ class FEEPredictionService:
             }
         }
 
-
     def _calculate_dynamic_fee(self, selected_route: Dict[str, Any],
                                request: PredictionRequest,
                                external_factors: Dict[str, Any],
-                               cp_info: Dict[str, Any]) -> FEECalculation:
+                               cp_info: Dict[str, Any],
+                               # NUEVO: Agregar stock_analysis
+                               stock_analysis: Dict[str, Any] = None) -> FEECalculation:
         """📅 Calcula FEE dinámico"""
 
         tiempo_total = selected_route['tiempo_total_horas']
 
-        # Determinar tipo de entrega dinámicamente
-        # En el método _calculate_dynamic_fee, cambiar la llamada:
-
+        # MODIFICAR: Pasar allocation_plan y selected_route
         tipo_entrega = self._determine_delivery_type(
             tiempo_total, request.fecha_compra, external_factors, cp_info,
             selected_route.get('distancia_total_km', 999),
-            selected_route.get('has_local_stock', False)
+            selected_route.get('has_local_stock', False),
+            allocation_plan=stock_analysis.get('allocation_plan', []) if stock_analysis else [],
+            selected_route=selected_route
         )
 
         # Calcular fecha de entrega
@@ -1733,7 +1735,10 @@ class FEEPredictionService:
 
     def _determine_delivery_type(self, tiempo_horas: float, fecha_compra: datetime,
                                  external_factors: Dict[str, Any], cp_info: Dict[str, Any],
-                                 distance_km: float, has_local_stock: bool) -> TipoEntregaEnum:
+                                 distance_km: float, has_local_stock: bool,
+                                 # NUEVO: Agregar parámetros adicionales
+                                 allocation_plan: List[Dict[str, Any]] = None,
+                                 selected_route: Dict[str, Any] = None) -> TipoEntregaEnum:
         """📦 Determina tipo de entrega CORREGIDO con lógica real de negocio"""
 
         hora_compra = fecha_compra.hour
@@ -1741,39 +1746,75 @@ class FEEPredictionService:
         zona = cp_info.get('zona_seguridad', 'Verde')
         cobertura = cp_info.get('cobertura_liverpool', False)
 
-        logger.info(f"📦 Lógica:")
-        logger.info(f"   Hora compra: {hora_compra}h, Distancia: {distance_km:.1f}km")
-        logger.info(f"   Stock local: {has_local_stock}, Factor demanda: {factor_demanda}")
+        # NUEVO: Analizar complejidad del split inventory
+        is_split_inventory = len(allocation_plan) > 1 if allocation_plan else False
+        max_distance_in_plan = 0
+        total_cantidad = 0
 
-        # REGLA 1: FLASH - Mismo día (condiciones estrictas)
-        if (hora_compra < 12 and  # Antes de mediodía
-                has_local_stock and  # Stock en tienda cercana
-                distance_km <= 50 and  # Distancia local
-                factor_demanda <= 1.2 and  # Sin alta demanda
+        if allocation_plan:
+            for plan in allocation_plan:
+                max_distance_in_plan = max(max_distance_in_plan, plan.get('distancia_km', 0))
+                total_cantidad += plan.get('cantidad', 0)
+
+        # NUEVO: Verificar si es ruta compleja
+        is_complex_route = selected_route and selected_route.get('tipo_ruta') in ['compleja_cedis',
+                                                                                  'multi_segmento_cedis']
+
+        logger.info(f"📦 Lógica mejorada:")
+        logger.info(f"   Hora compra: {hora_compra}h, Distancia max: {max_distance_in_plan:.1f}km")
+        logger.info(f"   Stock local: {has_local_stock}, Split inventory: {is_split_inventory}")
+        logger.info(
+            f"   Cantidad total: {total_cantidad}, Tiendas involucradas: {len(allocation_plan) if allocation_plan else 0}")
+        logger.info(f"   Ruta compleja: {is_complex_route}")
+
+        # REGLA 1: FLASH - Solo si TODO es local y simple
+        if (hora_compra < 12 and
+                has_local_stock and
+                not is_split_inventory and  # NUEVO: NO split inventory
+                max_distance_in_plan <= 50 and  # NUEVO: Usar distancia máxima real
+                total_cantidad <= 10 and  # NUEVO: Cantidad manejable
+                factor_demanda <= 1.2 and
                 zona in ['Verde', 'Amarilla'] and
-                cobertura):
+                cobertura and
+                not is_complex_route):  # NUEVO: NO rutas complejas
 
-            logger.info("   → FLASH: Entrega mismo día")
+            logger.info("   → FLASH: Entrega mismo día (condiciones ideales)")
             return TipoEntregaEnum.FLASH
 
-        # REGLA 2: EXPRESS - Siguiente día
-        elif (hora_compra < 20 and  # Antes de 8 PM
-              has_local_stock and  # Stock en tienda cercana
-              distance_km <= 100 and
-              factor_demanda <= 2.0 and
-              zona in ['Verde', 'Amarilla']):
+        # REGLA 2: EXPRESS - Stock cercano pero con algunas complejidades
+        elif (hora_compra < 20 and
+              has_local_stock and
+              max_distance_in_plan <= 100 and  # NUEVO: Todas las tiendas cercanas
+              total_cantidad <= 50 and  # NUEVO: Cantidad moderada
+              len(allocation_plan) <= 2 if allocation_plan else True and  # NUEVO: Máximo 2 tiendas
+                                                                factor_demanda <= 2.0 and
+                                                                zona in ['Verde', 'Amarilla'] and
+                                                                not is_complex_route):
 
             logger.info("   → EXPRESS: Siguiente día hábil")
             return TipoEntregaEnum.EXPRESS
 
-        # REGLA 3: STANDARD - 2-3 días (stock requiere ruteo)
-        elif tiempo_horas <= 72:
-            logger.info("   → STANDARD: Ruteo requerido")
+        # REGLA 3: STANDARD - Casos moderadamente complejos
+        elif (tiempo_horas <= 72 and
+              not is_complex_route and
+              (not allocation_plan or len(allocation_plan) <= 3)):  # NUEVO: Máximo 3 tiendas
+
+            logger.info("   → STANDARD: 2-3 días (ruteo moderado)")
             return TipoEntregaEnum.STANDARD
 
-        # REGLA 4: PROGRAMADA - Casos complejos
+        # REGLA 4: PROGRAMADA - Casos muy complejos
         else:
-            logger.info("   → PROGRAMADA: Caso complejo")
+            razones = []
+            if is_split_inventory and len(allocation_plan) > 3:
+                razones.append(f"split desde {len(allocation_plan)} tiendas")
+            if max_distance_in_plan > 500:
+                razones.append(f"distancia máxima {max_distance_in_plan:.0f}km")
+            if is_complex_route:
+                razones.append("ruteo con CEDIS")
+            if total_cantidad > 50:
+                razones.append(f"cantidad alta ({total_cantidad} unidades)")
+
+            logger.info(f"   → PROGRAMADA: Caso complejo - {', '.join(razones)}")
             return TipoEntregaEnum.PROGRAMADA
 
     def _calculate_delivery_date(self, fecha_compra: datetime, tiempo_horas: float,
