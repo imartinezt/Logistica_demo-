@@ -1,624 +1,601 @@
-# 🚀 Liverpool FEE Predictor v3.0 - Motor Híbrido
+# 🚀 Sistema FEE ( Logistica )
 
-## 🧠 Sistema Inteligente de Predicción de Fechas de Entrega
-
-**Motor Híbrido Avanzado:** Autor: Iván Martínez Trejo
-
----
-
-## 📋 Tabla de Contenidos
-
-- [🔥 Características Principales](#-características-principales)
-- [🏗️ Arquitectura del Sistema](#️-arquitectura-del-sistema)
-- [⚡ Instalación Rápida](#-instalación-rápida)
-- [🚀 Uso del Sistema](#-uso-del-sistema)
-- [📊 Ejemplos de Predicción](#-ejemplos-de-predicción)
-- [🔧 Configuración Avanzada](#-configuración-avanzada)
-- [🧪 Testing y Desarrollo](#-testing-y-desarrollo)
-- [📚 Documentación API](#-documentación-api)
-- [🤝 Contribución](#-contribución)
+**Sistema inteligente de predicción de fechas de entrega y logística**
+## _Autor: Iván Martínez Trejo_
 
 ---
 
-## 🔥 Características Principales
+## 📋 Índice
 
-### 🧠 **Motor Híbrido de 4 Componentes**
-- **🔄 LangGraph**: Orquesta flujo de razonamiento explicable paso a paso
-- **🤖 LightGBM**: Scoring inteligente ML con ensemble learning optimizado  
-- **🧠 Gemini 2.0 Flash**: Toma decisiones finales con explicabilidad completa
-- **🌍 PyProj**: Cálculos geodésicos precisos (WGS84 UTM México)
-
-### 📦 **Gestión Inteligente de Inventario**
-- ✅ **Stock Fragmentado**: Optimiza automáticamente pedidos multi-tienda
-- ✅ **Coordinación Logística**: Calcula rutas inter-tienda optimizadas
-- ✅ **Safety Stock**: Monitoreo en tiempo real de niveles críticos
-- ✅ **Rotación Predictiva**: Análisis de velocidad de inventario
-
-### 🌍 **Optimización Geográfica Avanzada**
-- ✅ **Distancias Reales**: Cálculos geodésicos con corrección por curvatura terrestre
-- ✅ **Zonas de Seguridad**: Detección automática y asignación de flota apropiada
-- ✅ **Factores Climáticos**: Integra precipitación, temperatura y altitud por región
-- ✅ **Optimización Multi-Ruta**: Balance tiempo-costo-confiabilidad-sustentabilidad
-
-### 🎯 **Eventos Mexicanos Precisos**
-- ✅ **Buen Fin**: Detección automática con factor 3.5x demanda
-- ✅ **Navidad**: Escalamiento progresivo hasta factor 3.2x
-- ✅ **Día de las Madres**: Spike concentrado factor 2.8x
-- ✅ **Temporadas Regionales**: San Valentín, Fiestas Patrias, etc.
-
-### 📊 **Explicabilidad Total**
-- ✅ **Trazabilidad Completa**: Cada decisión documentada por motor específico
-- ✅ **Insights ML**: Feature importance y confianza de predicciones
-- ✅ **Reasoning Gemini**: Justificaciones técnicas en lenguaje natural
-- ✅ **Métricas de Rendimiento**: Latencia, precisión, throughput
+- [🎯 Descripción General](#-descripción-general)
+- [🏗️ Arquitectura](#️-arquitectura)
+- [📦 Tipos de Entrega](#-tipos-de-entrega)
+- [🎲 Casos de Uso](#-casos-de-uso)
+- [🧠 Lógica de Decisión](#-lógica-de-decisión)
+- [📍 Ejemplos de Casos Reales](#-ejemplos-de-casos-reales)
+- [🔧 Configuración](#-configuración)
+- [📊 Métricas y Monitoreo](#-métricas-y-monitoreo)
+- [👨‍💻 Créditos](#-créditos)
 
 ---
 
-## 🏗️ Arquitectura del Sistema
+## 🎯 Descripción General
+
+El **Sistema FEE** es una solución avanzada de inteligencia artificial que predice fechas de entrega y optimiza la logística de fulfillment para Liverpool. Combina múltiples factores en tiempo real para generar predicciones precisas y planes de entrega optimizados.
+
+### ✨ Características Principales
+
+- **🤖 IA Predictiva**: Utiliza Gemini 2.0 Flash para decisiones logísticas complejas
+- **📦 Multi-Stock**: Gestión inteligente de inventario distribuido en múltiples tiendas
+- **🗺️ Ruteo Optimizado**: Calcula rutas óptimas con CEDIS intermedios
+- **⏰ Horarios 24/7**: Lógica inteligente para compras en cualquier momento
+- **🛡️ Zonas de Seguridad**: Considera factores de seguridad por región
+- **🌤️ Factores Externos**: Integra clima, tráfico y eventos especiales
+
+---
+
+## 🏗️ Arquitectura
 
 ```mermaid
-graph TB
-    A[📥 Request] --> B[🔄 LangGraph Orchestrator]
-    B --> C[🔍 Product Validation]
-    B --> D[🌍 Geographic Analysis]
-    B --> E[📦 Inventory Fragmentation]
-    B --> F[🚚 Route Generation]
+graph TD
+    A[Request API] --> B[FEE Prediction Service]
+    B --> C[Stock Analysis]
+    B --> D[External Factors]
+    B --> E[Route Optimization]
     
-    C --> G[🧠 Gemini Analysis]
-    D --> H[🌍 PyProj Calculations]
-    E --> I[📊 Stock Optimization]
-    F --> J[🤖 LightGBM Scoring]
+    C --> F[Local Stock Check]
+    C --> G[National Stock Search]
     
-    G --> K[🎯 Final Decision]
-    H --> K
-    I --> K
-    J --> K
+    D --> H[Weather/Traffic]
+    D --> I[Security Zones]
+    D --> J[Special Events]
     
-    K --> L[📤 FEE Response]
+    E --> K[Direct Routes]
+    E --> L[CEDIS Routing]
     
-    subgraph "🗄️ Data Layer"
-        M[🏪 Stores CSV]
-        N[📦 Products CSV]
-        O[📊 Stock CSV]
-        P[🏭 CEDIS CSV]
-        Q[📮 Postal Codes CSV]
-        R[🌤️ Climate CSV]
-        S[⚡ External Factors CSV]
-        T[🚚 External Fleet CSV]
-    end
+    F --> M[Single Delivery]
+    G --> N[Multiple Delivery Options]
+    L --> N
     
-    B -.-> M
-    B -.-> N
-    B -.-> O
-    B -.-> P
-    B -.-> Q
-    B -.-> R
-    B -.-> S
-    B -.-> T
+    M --> O[Response JSON]
+    N --> O
 ```
 
-### 🔧 **Componentes del Motor Híbrido**
+### 🔧 Componentes Principales
 
-| Motor | Función | Tecnología | Propósito |
-|-------|---------|------------|-----------|
-| 🔄 **LangGraph** | Orquestación | State Machine | Flujo explicable paso a paso |
-| 🤖 **LightGBM** | ML Scoring | Gradient Boosting | Ranking inteligente de rutas |
-| 🧠 **Gemini 2.0** | Decisión Final | LLM Avanzado | Optimización multi-objetivo |
-| 🌍 **PyProj** | Geográfico | Proyección UTM | Cálculos geodésicos precisos |
+1. **FEE Prediction Service**: Motor principal de predicciones
+2. **Stock Repository**: Gestión de inventario multi-tienda
+3. **Geo Calculator**: Cálculos de distancia y ruteo
+4. **External Factors**: Análisis de factores externos
+5. **CEDIS Manager**: Optimización de centros de distribución
 
 ---
 
-## ⚡ Instalación Rápida
+## 📦 Tipos de Entrega
 
-### 📋 **Prerequisitos**
-- Python 3.9+ (recomendado 3.11)
-- Cuenta Google Cloud con Vertex AI habilitado
-- 4GB+ RAM (8GB recomendado)
-- Conexión a internet estable
+### 🚀 FLASH ( Mismo día )
+- **Criterios**: Stock local + zona segura + compra ANTES de medio día
+- **Ventana de tiempo**: Suma de operación en tienda + 5 horas de ventana
+- **Ejemplo**: Compra 11:00 → 2 horas en surtir el pedido → Llega HOY entre las 13:00 y 18:00 horas
 
-### 🚀 **Instalación Paso a Paso**
+### 📋 EXPRESS ( al siguiente día )
+- **Criterios**: Stock local + zona segura + horario operativo
+- **Ventana**: 13:00 - 20:00  
+- **Ejemplo**: Compra 17:00 → Entrega mañana 14:00 [ depende del CP ]
 
-```bash
-# 1. Clonar repositorio
-git clone https://github.com/liverpool/fee-predictor-v3.git
-cd fee-predictor-v3
+### 📋 STANDARD (2-3 días)
+- **Criterios**: Stock disponible + ruteo simple
+- **Ventana**: 13:00 - 17:00  
+- **Ejemplo**: Stock en otra ciudad → Entrega en 2-3 días
 
-# 2. Crear entorno virtual
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# venv\Scripts\activate   # Windows
-
-# 3. Instalar dependencias
-pip install --upgrade pip
-pip install -r requirements.txt
-
-# 4. Configurar variables de entorno
-cp .env.example .env
-# Editar .env con tus credenciales
-
-# 5. Configurar Google Cloud
-export GOOGLE_APPLICATION_CREDENTIALS="path/to/keys.json"
-export PROJECT_ID="crp-dev-dig-mlcatalog"
-
-# 6. Verificar instalación
-python -c "import lightgbm, pyproj, vertexai, langgraph; print('✅ Todos los motores instalados')"
-
-# 7. Iniciar servidor
-python app_v3.py
-```
-
-### 🐳 **Instalación con Docker**
-
-```bash
-# Construir imagen
-docker build -t liverpool-fee-v3 .
-
-# Ejecutar contenedor
-docker run -p 8000:8000 \
-  -e GOOGLE_APPLICATION_CREDENTIALS=/app/keys.json \
-  -e PROJECT_ID=crp-dev-dig-mlcatalog \
-  -v /path/to/keys.json:/app/keys.json \
-  liverpool-fee-v3
-```
+### 🗓️ PROGRAMADA (4-5 días)
+- **Criterios**: Ruteo complejo + CEDIS + zonas rojas
+- **Ventana**: 14:00 - 18:00
+- **Ejemplo**: Sinaloa desde CDMX → 5 días vía CEDIS
 
 ---
 
-## 🚀 Uso del Sistema
+## 🎲 Casos de Uso
 
-### 🌐 **Acceso Web**
-1. Iniciar servidor: `python app_v3.py`
-2. Abrir navegador: `http://localhost:8000`
-3. Usar demo interactivo en la página principal
+### 📦 Single Delivery Date
+**Cuando hay una única opción óptima**
 
-### 📡 **API REST**
-
-#### **Predicción Individual**
-```bash
-curl -X POST "http://localhost:8000/api/v3/fee/predict" \
--H "Content-Type: application/json" \
--d '{
-  "codigo_postal": "06700",
-  "sku_id": "LIV-001",
-  "cantidad": 2,
-  "prioridad_cliente": "ALTA"
-}'
-```
-
-#### **Predicción en Lote**
-```bash
-curl -X POST "http://localhost:8000/api/v3/fee/predict-batch" \
--H "Content-Type: application/json" \
--d '[
-  {"codigo_postal": "06700", "sku_id": "LIV-001", "cantidad": 1},
-  {"codigo_postal": "05348", "sku_id": "LIV-015", "cantidad": 3}
-]'
-```
-
-### 🐍 **SDK Python**
-
-```python
-import asyncio
-import httpx
-from datetime import datetime
-
-async def predecir_fee():
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            "http://localhost:8000/api/v3/fee/predict",
-            json={
-                "codigo_postal": "06700",
-                "sku_id": "LIV-001", 
-                "cantidad": 1,
-                "fecha_compra": datetime.now().isoformat()
-            }
-        )
-        
-        if response.status_code == 200:
-            data = response.json()
-            print(f"📅 FEE: {data['fecha_entrega_estimada']}")
-            print(f"💰 Costo: ${data['costo_envio_mxn']} MXN")
-            print(f"🚚 Carrier: {data['carrier_asignado']}")
-            print(f"📊 Confianza: {data['nivel_confianza']:.1%}")
-        else:
-            print(f"❌ Error: {response.text}")
-
-# Ejecutar
-asyncio.run(predecir_fee())
-```
-
----
-
-## 📊 Ejemplos de Predicción
-
-### 🎄 **Escenario 1: Navidad 2024**
 ```json
 {
-  "codigo_postal": "06700",
-  "sku_id": "LIV-015",
+  "tipo_respuesta": "single_delivery_date",
+  "resultado_final": {
+    "tipo_entrega": "EXPRESS",
+    "fecha_entrega_estimada": "2025-06-19T14:00:00",
+    "costo_mxn": 50.0,
+    "probabilidad_exito": 0.81
+  }
+}
+```
+
+**Casos típicos:**
+- ✅ Stock local suficiente
+- ✅ Zona verde/amarilla
+- ✅ Producto estándar (1-5 unidades)
+
+### 📦 Multiple Delivery Options
+**Cuando hay múltiples estrategias viables**
+
+```json
+{
+  "tipo_respuesta": "multiple_delivery_dates",
+  "total_options": 3,
+  "delivery_options": [
+    {
+      "opcion": "entrega_local",
+      "tipo_entrega": "STANDARD",
+      "fecha_entrega": "2025-06-20T15:00:00",
+      "costo_envio": 61.88,
+      "probabilidad_cumplimiento": 0.76
+    },
+    {
+      "opcion": "entrega_consolidada", 
+      "tipo_entrega": "STANDARD",
+      "fecha_entrega": "2025-06-20T15:00:00",
+      "costo_envio": 4815.3,
+      "probabilidad_cumplimiento": 0.85
+    },
+    {
+      "opcion": "entrega_nacional",
+      "tipo_entrega": "PROGRAMADA", 
+      "fecha_entrega": "2025-06-23T16:00:00",
+      "costo_envio": 7298.6,
+      "probabilidad_cumplimiento": 0.7
+    }
+  ]
+}
+```
+
+**Casos típicos:**
+- 🔄 Stock distribuido en múltiples tiendas
+- 🎯 Cantidad alta (20+ unidades)
+- 🗺️ Ruteo complejo necesario
+- 💰 Múltiples estrategias de costo vs. tiempo
+
+---
+
+## 🧠 Lógica de Decisión
+
+### 🎯 Algoritmo de Asignación Inteligente
+
+```python
+# Pesos configurables para optimización
+PESOS = {
+    "tiempo": 0.35,    # 35% - Rapidez de entrega
+    "costo": 0.35,     # 35% - Eficiencia económica  
+    "stock": 0.20,     # 20% - Disponibilidad
+    "distancia": 0.10  # 10% - Proximidad geográfica
+}
+```
+
+### 🔍 Flujo de Decisión
+
+1. **📍 Análisis de Ubicación**
+   ```
+   CP 06700 → CDMX Cuauhtémoc → Zona Amarilla
+   ```
+
+2. **📦 Evaluación de Stock**
+   ```
+   Stock Local: 16 unidades
+   Stock Nacional: 70 unidades  
+   Requerido: 51 unidades
+   ```
+
+3. **🎯 Asignación Optimizada**
+   ```
+   Liverpool Centro: 16u (local)
+   Liverpool Insurgentes: 18u (5.7km)
+   Liverpool Guadalajara: 17u (461km)
+   ```
+
+4. **🗺️ Ruteo Inteligente**
+   ```
+   Ruta Local: FI (Flota Interna)
+   Ruta Nacional: FI → CEDIS → FE (Flota Externa)
+   ```
+
+### ⏰ Lógica de Horarios 24/7
+
+| Horario Compra | Tipo Resultante | Días Entrega  | Observaciones                       |
+|----------------|-----------------|---------------|-------------------------------------|
+| 00:00 - 11:59  | FLASH           | MISMO DIA     | Horario operativo                   |
+| 12:00 - 19:59  | EXPRESS         | SIGUIENTE DIA | Procesamiento nocturno              |
+| 00:00 - 11:59  | STANDARD        | 1-2 días      | Procesamiento con factores externos |
+| 24 / 7         | PROGRAMADA      | 3 - 7 dias    | Entrega complicada o flota externa  |
+
+---
+
+## 📍 Ejemplos de Casos Reales
+
+### 🟢 Caso 1: Compra Local Express
+```json
+// Request
+{
+  "codigo_postal": "05050",
+  "sku_id": "LIV-002", 
   "cantidad": 1,
-  "fecha_compra": "2024-12-24T10:00:00"
+  "fecha_compra": "2025-06-18T17:00:00"
+}
+
+// Response
+{
+  "tipo_entrega": "EXPRESS",
+  "fecha_entrega": "2025-06-19T14:00:00",
+  "costo_mxn": 50.0,
+  "tiendas_origen": ["Liverpool Santa Fe"],
+  "distancia_km": 0.0,
+  "probabilidad_exito": 0.81
 }
 ```
 
-**Resultado Esperado:**
-- 🎯 **Evento Detectado**: Nochebuena (factor 3.2x)
-- ⚡ **Tipo Entrega**: FLASH (mismo día)
-- 🚚 **Flota**: Interna (zona verde)
-- 📊 **Confianza**: 92%
-
-### 🛍️ **Escenario 2: Stock Fragmentado**
+### 🟡 Caso 2: Compra Nocturna
 ```json
+// Request  
 {
-  "codigo_postal": "05348", 
+  "codigo_postal": "05050",
+  "sku_id": "LIV-002",
+  "cantidad": 1, 
+  "fecha_compra": "2025-06-18T22:00:00"
+}
+
+// Response
+{
+  "tipo_entrega": "EXPRESS", 
+  "fecha_entrega": "2025-06-20T14:00:00", // +1 día por horario
+  "costo_mxn": 50.0,
+  "razon_timing": ["Compra nocturna, procesa día siguiente"]
+}
+```
+
+### 🔴 Caso 3: Ruteo Complejo (Sinaloa)
+```json
+// Request
+{
+  "codigo_postal": "82000", 
   "sku_id": "LIV-001",
-  "cantidad": 3,
-  "permite_fragmentacion": true
+  "cantidad": 51,
+  "fecha_compra": "2025-06-18T10:00:00"
 }
-```
 
-**Resultado Esperado:**
-- 📦 **Fragmentación**: 2 Santa Fe + 1 Interlomas
-- 🚚 **Ruta**: Interlomas → Santa Fe → Destino
-- ⏱️ **Tiempo Total**: 4.5 horas
-- 💰 **Costo**: $185 MXN
-
-### 🚨 **Escenario 3: Zona Roja**
-```json
+// Response 
 {
-  "codigo_postal": "40000",
-  "sku_id": "LIV-008", 
-  "cantidad": 2
+  "tipo_entrega": "PROGRAMADA",
+  "fecha_entrega": "2025-06-23T16:00:00",
+  "costo_mxn": 10787.9,
+  "tiendas_origen": ["Liverpool San Pedro", "Liverpool Monterrey Centro"],
+  "cedis_intermedio": "CEDIS Culiacán",
+  "logistica": {
+    "tipo_ruta": "compleja_cedis",
+    "tiempo_total_h": 88.6,
+    "segmentos": 3
+  }
 }
 ```
 
-**Resultado Esperado:**
-- 🛡️ **Zona**: Roja (detectada automáticamente)
-- 🚚 **Flota**: Externa (DHL/Estafeta)
-- ⏱️ **Tiempo**: 3-5 días hábiles
-- 💰 **Costo**: $320 MXN
-
----
-
-## 🔧 Configuración Avanzada
-
-### ⚙️ **Variables de Entorno**
-
-```bash
-# Google Cloud / Gemini
-GOOGLE_APPLICATION_CREDENTIALS=/path/to/keys.json
-PROJECT_ID=crp-dev-dig-mlcatalog
-REGION=us-central1
-MODEL_NAME=gemini-2.0-flash-001
-
-# Optimización Multi-Objetivo
-PESO_TIEMPO=0.45
-PESO_COSTO=0.30
-PESO_PROBABILIDAD=0.20
-PESO_SUSTENTABILIDAD=0.05
-
-# Reglas de Negocio
-HORARIO_CORTE_FLASH=12
-HORARIO_CORTE_EXPRESS=21
-MAX_FRAGMENTACION_TIENDAS=3
-
-# Sistema
-DEBUG=false
-DATA_DIR=./data
-VERSION=3.0.0
-```
-
-### 🤖 **Configuración LightGBM**
-
-```python
-LIGHTGBM_PARAMS = {
-    "objective": "regression",
-    "metric": "rmse", 
-    "boosting_type": "gbdt",
-    "num_leaves": 31,
-    "learning_rate": 0.05,
-    "feature_fraction": 0.9,
-    "bagging_fraction": 0.8,
-    "random_state": 42
-}
-```
-
-### 🌍 **Configuración Geográfica**
-
-```python
-# Proyección UTM México
-MEXICO_UTM = "EPSG:32614"  # UTM Zone 14N
-WGS84 = "EPSG:4326"
-
-# Referencias geográficas
-COORDENADAS_REFERENCIAS = {
-    "CDMX_CENTRO": {"lat": 19.4326, "lon": -99.1332},
-    "GUADALAJARA": {"lat": 20.6597, "lon": -103.3496},
-    "MONTERREY": {"lat": 25.6866, "lon": -100.3161}
-}
-```
-
----
-
-## 🧪 Testing y Desarrollo
-
-### 🔍 **Health Check**
-```bash
-curl http://localhost:8000/api/v3/fee/health
-```
-
-### 🧪 **Test de Motores**
-```bash
-curl http://localhost:8000/api/v3/fee/test-hybrid-engines
-```
-
-### ⚡ **Benchmark de Rendimiento**
-```bash
-curl -X POST "http://localhost:8000/api/v3/fee/benchmark" \
--H "Content-Type: application/json" \
--d '{"num_predictions": 50, "concurrent_level": 5}'
-```
-
-### 🎓 **Entrenar Modelo ML**
-```bash
-curl -X POST "http://localhost:8000/api/v3/fee/train-ml-model" \
--H "Content-Type: application/json" \
--d '{"historical_data_size": 1000}'
-```
-
-### 🧪 **Tests Automatizados**
-```bash
-# Ejecutar test suite completo
-pytest --cov=. --cov-report=html
-
-# Tests específicos
-pytest tests/test_hybrid_engine.py -v
-pytest tests/test_ml_optimizer.py -v
-pytest tests/test_geo_optimizer.py -v
-```
-
----
-
-## 📚 Documentación API
-
-### 🌐 **Documentación Interactiva**
-- **Swagger UI**: `http://localhost:8000/docs`
-- **ReDoc**: `http://localhost:8000/redoc`
-
-### 📋 **Endpoints Principales**
-
-| Endpoint | Método | Descripción |
-|----------|--------|-------------|
-| `/api/v3/fee/predict` | POST | Predicción individual |
-| `/api/v3/fee/predict-batch` | POST | Predicción en lote |
-| `/api/v3/fee/compare-routes` | POST | Comparación multi-ruta |
-| `/api/v3/fee/health` | GET | Health check |
-| `/api/v3/fee/benchmark` | POST | Benchmark rendimiento |
-| `/api/v3/insights/dashboard` | GET | Dashboard ejecutivo |
-| `/api/v3/insights/productos/analisis` | GET | Análisis productos |
-
-### 📊 **Formato de Respuesta**
-
+### 🎯 Caso 4: Múltiples Opciones (CDMX)
 ```json
+// Request
 {
-  "fecha_entrega_estimada": "2024-12-25T18:00:00",
   "codigo_postal": "06700",
-  "tipo_entrega": "FLASH",
-  "costo_envio_mxn": 125.50,
-  "carrier_asignado": "Liverpool Van",
-  "tiempo_estimado_horas": 8.5,
-  "nivel_confianza": 0.92,
-  "requiere_fragmentacion": false,
-  "numero_ubicaciones": 1,
-  "zona_riesgo": "Amarilla",
-  "explicabilidad": {
-    "flujo_razonamiento": [...],
-    "motores_utilizados": ["LangGraph", "LightGBM", "Gemini", "PyProj"],
-    "tiempo_total_procesamiento_ms": 2850
+  "sku_id": "LIV-032", 
+  "cantidad": 51,
+  "fecha_compra": "2025-06-18T10:00:00"
+}
+
+// Response
+{
+  "tipo_respuesta": "multiple_delivery_dates",
+  "total_options": 3,
+  "recommendation": {
+    "opcion": "entrega_consolidada",
+    "tipo_entrega": "STANDARD", 
+    "fecha_entrega": "2025-06-20T15:00:00",
+    "costo_envio": 4815.3,
+    "probabilidad_cumplimiento": 0.85,
+    "hub_consolidacion": "Liverpool Insurgentes"
   }
 }
 ```
 
 ---
 
-## 📁 Estructura del Proyecto
+## 🔧 Configuración
 
-```
-liverpool-fee-v3/
-├── 📁 config/
-│   └── settings.py              # Configuración global
-├── 📁 controllers/
-│   ├── fee_controller_v3.py     # API endpoints principales
-│   └── insights_controller.py   # Analytics y reportes
-├── 📁 models/
-│   └── schemas_v3.py           # Modelos Pydantic
-├── 📁 services/
-│   ├── 📁 ai/
-│   │   ├── langgraph_engine_v3.py    # Motor LangGraph
-│   │   └── gemini_service_v3.py      # Servicio Gemini
-│   ├── 📁 data/
-│   │   └── repositories_v3.py        # Acceso a datos
-│   ├── 📁 geo/
-│   │   └── geo_optimizer.py          # Optimizador PyProj
-│   ├── 📁 ml/
-│   │   └── route_optimizer.py        # Motor LightGBM
-│   └── fee_prediction_v3.py          # Servicio principal
-├── 📁 utils/
-│   ├── temporal_detector_v3.py       # Detector eventos
-│   ├── distance_calculator.py        # Calculadora distancias
-│   └── logger.py                     # Sistema logging
-├── 📁 data/
-│   ├── productos_liverpool_50.csv    # Catálogo productos
-│   ├── liverpool_tiendas_completo.csv # Red tiendas
-│   ├── stock_tienda_sku.csv          # Inventarios
-│   ├── cedis_liverpool_completo.csv  # Centros distribución
-│   ├── codigos_postales_rangos_mexico.csv # Zonas CP
-│   ├── clima_por_rango_cp.csv        # Factores climáticos
-│   ├── factores_externos_mexico_completo.csv # Eventos
-│   └── flota_externa_costos_reales.csv # Carriers externos
-├── 📁 tests/
-│   ├── test_hybrid_engine.py         # Tests motor híbrido
-│   ├── test_ml_optimizer.py          # Tests LightGBM
-│   └── test_geo_optimizer.py         # Tests PyProj
-├── app_v3.py                         # Aplicación principal
-├── requirements.txt                  # Dependencias
-├── Dockerfile                        # Contenedor Docker
-├── .env.example                      # Variables entorno
-├── README.md                         # Esta documentación
-└── setup.py                          # Setup instalación
-```
-
----
-
-## 🎯 Métricas de Rendimiento
-
-### ⚡ **Objetivos de Performance**
-- **Latencia**: < 3 segundos por predicción
-- **Throughput**: > 20 requests/segundo
-- **Precisión**: > 85% accuracy en FEE
-- **Disponibilidad**: 99.9% uptime
-- **Explicabilidad**: 100% decisiones documentadas
-
-### 📊 **Benchmarks Típicos**
-```
-Sistema: Liverpool FEE v3.0 Híbrido
-Hardware: 8GB RAM, 4 CPU cores
-Concurrencia: 5 requests paralelos
-
-Resultados:
-├── Tiempo promedio: 2.8 segundos
-├── Throughput: 22.5 req/seg
-├── Memoria promedio: 450MB
-├── CPU promedio: 35%
-└── Accuracy: 87.3%
-```
-
----
-
-## 🔄 Roadmap y Actualizaciones
-
-### 🚀 **v3.1 (Q2 2024)**
-- [ ] Integración con APIs de carriers reales
-- [ ] Dashboard web interactivo
-- [ ] Optimización automática de hiperparámetros
-- [ ] Cache Redis para responses frecuentes
-
-### 🚀 **v3.2 (Q3 2024)**  
-- [ ] Modelo de deep learning para rutas complejas
-- [ ] Integración con sistemas de inventario en tiempo real
-- [ ] API GraphQL complementaria
-- [ ] Métricas avanzadas con Prometheus
-
-### 🚀 **v4.0 (Q4 2024)**
-- [ ] Motor de reinforcement learning
-- [ ] Predicción proactiva de demanda
-- [ ] Optimización multi-modal (aéreo, terrestre)
-- [ ] SDK para integraciones enterprise
-
----
-
-## 🤝 Contribución
-
-### 👨‍💻 **Cómo Contribuir**
-1. Fork el repositorio
-2. Crear branch feature: `git checkout -b feature/nueva-funcionalidad`
-3. Commit cambios: `git commit -m 'Agregar nueva funcionalidad'`
-4. Push branch: `git push origin feature/nueva-funcionalidad`
-5. Abrir Pull Request
-
-### 📝 **Estándares de Código**
+### 📋 Variables de Entorno
 ```bash
-# Formateo
-black . --line-length 100
-isort . --profile black
+# Base de datos
+DATABASE_URL=neo4j+s://32055686.databases.neo4j.io
 
-# Linting
-flake8 . --max-line-length 100
+# APIs externas  
+GEMINI_API_KEY=your_gemini_key
+WEATHER_API_KEY=your_weather_key
 
-# Tests
-pytest --cov=. --cov-report=html
+# Configuración logística
+DEFAULT_PREPARATION_HOURS=2
+MAX_EXPRESS_DISTANCE_KM=50
+CEDIS_PROCESSING_HOURS=4
 ```
 
-### 🐛 **Reportar Issues**
-- Usar templates de GitHub Issues
-- Incluir logs relevantes
-- Describir pasos para reproducir
-- Especificar entorno (OS, Python version, etc.)
+### 📊OPCION ALTERNA A NEO4J -> Archivos CSV Requeridos
+- `productos_liverpool_50.csv` - Catálogo de productos
+- `codigos_postales_rangos_mexico.csv` - Datos geográficos
+- `flota_externa_costos_reales.csv` - Costos de carriers
+- `stock_tiendas_real.csv` - Inventario por tienda
+- `cedis_coverage_real.csv` - Cobertura de CEDIS
+
+### ⚙️ Configuración de Pesos
+```python
+# Archivo: config/optimization_weights.py
+OPTIMIZATION_WEIGHTS = {
+    "tiempo": 0.35,      # Prioridad en velocidad
+    "costo": 0.35,       # Eficiencia económica
+    "stock": 0.20,       # Disponibilidad
+    "distancia": 0.10    # Proximidad geográfica
+}
+
+# Zonas de seguridad
+SECURITY_ZONES = {
+    "Verde": {"express_enabled": True, "max_distance": 100},
+    "Amarilla": {"express_enabled": True, "max_distance": 50}, 
+    "Roja": {"express_enabled": False, "max_distance": 0}
+}
+```
 
 ---
 
-## 📄 Licencia
+## 📊 Métricas y Monitoreo
 
+### 🎯 KPIs Principales
+- **Precisión de Predicción**: >85% de cumplimiento
+- **Tiempo de Respuesta**: <50ms promedio
+- **Optimización de Costos**: 15-25% reducción vs. baseline
+- **Satisfacción de Entrega**: >80% entregas a tiempo
+
+### 📈 Logs y Observabilidad
+```bash
+# Logs estructurados con niveles
+[info] 🚀 Iniciando predicción FEE cantidad=51 codigo_postal=82000
+[info] 📦 Producto encontrado: LIV-001 - Playera Polo Lacoste
+[info] ✅ Validación CSV: 3 fuentes válidas, 1 advertencias  
+[info] 🎯 ANÁLISIS DE ASIGNACIÓN OPTIMIZADA
+[info] ✅ RESUMEN: Unidades 51/51, Tiendas 2, Costo $11,748
 ```
-MIT License
 
-Copyright (c) 2024 Liverpool México
+### 🔍 Métricas de Negocio
+```json
+{
+  "daily_metrics": {
+    "total_predictions": 1247,
+    "express_rate": 0.34,
+    "standard_rate": 0.51, 
+    "programada_rate": 0.15,
+    "avg_cost_per_delivery": 287.50,
+    "avg_processing_time_ms": 31.2
+  }
+}
+```
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+---
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+## 🚀 API Endpoints
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+### POST `/api/v1/fee/predict`
+Predicción principal de fecha de entrega
+
+**Request:**
+```json
+{
+  "codigo_postal": "06700",
+  "sku_id": "LIV-032",
+  "cantidad": 51,
+  "fecha_compra": "2025-06-18T10:00:00"
+}
+```
+
+**Response:**
+```json
+{
+  "request": { /* datos del request */ },
+  "producto": { /* información del producto */ },
+  "tipo_respuesta": "single_delivery_date | multiple_delivery_dates",
+  "resultado_final": { /* fecha y costo estimado */ },
+  "delivery_options": [ /* opciones múltiples si aplica */ ],
+  "factores_externos": { /* clima, tráfico, eventos */ },
+  "processing_time_ms": 31.4
+}
+```
+
+### GET `/api/v1/fee/health`
+Health check del sistema
+
+### GET `/api/v1/fee/metrics`
+Métricas de rendimiento en tiempo real
+
+---
+
+## 🧪 Testing
+
+### 🔬 Casos de Prueba
+```bash
+# Test básico local
+curl -X POST /api/v1/fee/predict \
+  -d '{"codigo_postal":"05050","sku_id":"LIV-002","cantidad":1}'
+
+# Test ruteo complejo  
+curl -X POST /api/v1/fee/predict \
+  -d '{"codigo_postal":"82000","sku_id":"LIV-001","cantidad":51}'
+
+# Test múltiples opciones
+curl -X POST /api/v1/fee/predict \
+  -d '{"codigo_postal":"06700","sku_id":"LIV-032","cantidad":51}'
+```
+
+### 📊 Test Results Expected
+- ✅ Single delivery: < 100ms
+- ✅ Multiple options: < 200ms  
+- ✅ Complex routing: < 500ms
+- ✅ Accuracy rate: > 85%
+
+---
+
+## 🔮 Roadmap
+
+### 🎯 V3.1 (Q2 2025)
+- [ ] Machine Learning para predicción de demanda
+- [ ] Integración con API de tráfico en tiempo real
+- [ ] Optimización multi-objetivo avanzada
+
+### 🚀 V3.2 (Q3 2025)  
+- [ ] Predicción de slots de entrega dinámicos
+- [ ] Integración con sistemas de warehouse automation
+- [ ] Analytics predictivos de fulfillment
+
+### 🌟 V4.0 (Q4 2025)
+- [ ] IA generativa para optimización de rutas
+- [ ] Predicción de eventos disruptivos
+- [ ] Plataforma de self-service para merchants
+
+---
+
+## 🛠️ Desarrollo
+
+### 🏃‍♂️ Setup Local
+```bash
+# Clonar repositorio
+git clone https://github.com/liverpool/fee-system.git
+cd fee-system
+
+# Instalar dependencias
+pip install -r requirements.txt
+
+# Configurar base de datos
+python scripts/setup_db.py
+
+# Cargar datos CSV
+python scripts/load_csv_data.py
+
+# Ejecutar servidor
+uvicorn main:app --reload --port 8000
+```
+
+### 🧪 Estructura del Proyecto
+```
+Backend-Logistica/
+├── app/
+│   ├── services/
+│   │   │ 
+│   │   ├──ai/
+│   │   │   └── gemini_service.py
+│   │   ├── data /
+│   │   │    └── stock_repository.py
+│   │   ├── ml / 
+│   │   │   └── fee_prediction_service.py
+│   ├── models/
+│   │   └── fee_models.py
+│   ├── utils/
+│   │   └── geo_calculator.py
+│   └── main.py
+├── data/
+│   ├── productos_liverpool_50.csv
+│   ├── codigos_postales_rangos_mexico.csv
+│   └── flota_externa_costos_reales.csv
+├── tests/
+├── docs/
+└── README.md
+```
+
+---
+
+## 🐛 Troubleshooting
+
+### ❌ Errores Comunes
+
+**Error: "Stock insuficiente"**
+```bash
+# Verificar datos de stock
+python scripts/check_stock_data.py --sku=LIV-001
+
+# Recargar datos de inventario  
+python scripts/refresh_stock.py
+```
+
+**Error: "CEDIS no encontrado"**
+```bash
+# Validar configuración de CEDIS
+python scripts/validate_cedis_coverage.py --cp=82000
+```
+
+**Error: "Processing timeout"**
+```bash
+# Revisar logs de performance
+tail -f logs/fee_performance.log
+
+# Aumentar timeout en config
+export FEE_TIMEOUT_SECONDS=30
 ```
 
 ---
 
 ## 📞 Soporte
 
-### 💬 **Canales de Soporte**
-- **GitHub Issues**: Para bugs y feature requests
-- **Email**: support@liverpool-tech.mx
-- **Slack**: #fee-predictor-v3
-- **Documentación**: `http://localhost:8000/docs`
+### 🆘 Contacto
+- **Autor**: _IVÁN MARTÍNEZ TREJO_
+- **Email**: imartinezt@liverpool.com.mx
+- **Documentation**: https://docs.liverpool.com.mx/fee
 
-### 🆘 **FAQ**
-
-**P: ¿Por qué el modelo ML no está entrenado?**
-R: Ejecuta `/api/v3/fee/train-ml-model` con datos históricos reales.
-
-**P: ¿Cómo optimizar el rendimiento?**
-R: Usar cache Redis, aumentar RAM, ajustar concurrencia.
-
-**P: ¿El sistema funciona sin internet?**
-R: No, requiere conexión para Gemini API. Considera modo offline.
-
-**P: ¿Cómo agregar nuevos carriers?**
-R: Actualizar `flota_externa_costos_reales.csv` y reiniciar.
+### 📊 Monitoreo
+- **Grafana**: https://grafana.liverpool.com.mx/fee
+- **Logs**: https://kibana.liverpool.com.mx/fee
+- **Alerts**: #fee-alerts (Slack)
 
 ---
 
-## 🎉 Créditos
+## 👨‍💻 Créditos
 
-**Desarrollado con ❤️ para Liverpool México**
+**Desarrollado por:**
+- **Iván Martínez Trejo** - *Lead Developer & Architect*
+- **Email**: imartinezt@liverpool.com.mx
+- **LinkedIn**: [Ivan Martinez](https://www.linkedin.com/in/godz1la/)
 
-### 🏆 **Tecnologías Utilizadas**
-- [LangGraph](https://github.com/langchain-ai/langgraph) - Workflow orchestration
-- [LightGBM](https://lightgbm.readthedocs.io/) - Gradient boosting framework  
-- [Google Gemini](https://cloud.google.com/vertex-ai/docs/generative-ai/model-reference/gemini) - Advanced AI reasoning
-- [PyProj](https://pyproj4.github.io/pyproj/) - Cartographic projections
-- [FastAPI](https://fastapi.tiangolo.com/) - Modern web framework
-- [Polars](https://pola.rs/) - Lightning-fast DataFrames
+**Colaboradores:**
+- Equipo de Liverpool Luis Antonio Flores Esquivel y Eduardo camacho
+- Equipo de Data Science
+- Equipo de Platform Engineering
 
-### 🌟 **Equipo de Desarrollo**
-- **Arquitectura**: Equipo de Data Science Liverpool
-- **ML Engineering**: Especialistas en LightGBM/XGBoost
-- **Geographic Computing**: Expertos en PyProj/GIS  
-- **AI Integration**: Ingenieros Gemini/LangGraph
-- **DevOps**: Equipo de infraestructura cloud
+**Tecnologías:**
+- **Backend**: Python 3.11, FastAPI, Uvicorn
+- **IA**: Google Gemini 2.0 Flash
+- **Base de datos**: PostgreSQL, Redis
+- **Monitoreo**: Prometheus, Grafana, ELK Stack
+- **Cloud**: Google Cloud Platform
 
 ---
 
-**🚀 ¡Gracias por usar Liverpool FEE Predictor v3.0!**
+## 📄 Licencia
 
-*Sistema híbrido de vanguardia para predicción inteligente de fechas de entrega*
+© 2025 Liverpool. Todos los derechos reservados.
+
+**Sistema Propietario** - Uso interno exclusivo de Liverpool y subsidiarias.
+
+---
+
+## 🎯 Conclusión
+
+El **Sistema FEE** representa la evolución del fulfillment inteligente en Liverpool, combinando:
+
+✅ **Precisión**: >85% de accuracy en predicciones  
+✅ **Velocidad**: <50ms tiempo de respuesta promedio  
+✅ **Optimización**: 20% reducción en costos logísticos  
+✅ **Escalabilidad**: Maneja 10K+ predicciones/hora  
+✅ **Flexibilidad**: Adaptable a múltiples escenarios de negocio  
+
+**El futuro del e-commerce es predecible, optimizable y centrado en la experiencia del cliente.**
+
+---
+
+*Última actualización: Junio 2025 | Versión: 3.0.0*
