@@ -1,0 +1,108 @@
+flowchart TD
+    A[🚀 REQUEST FEE<br/>SKU + Cantidad + CP + Fecha] --> B[📦 Validar Producto]
+    B --> C{¿Producto existe?}
+    C -->|❌| ERR1[❌ Error: Producto no encontrado]
+    C -->|✅| D[🗺️ Analizar Código Postal]
+
+    D --> E[📍 Buscar Tiendas Cercanas]
+    E --> F[🏪 Buscar Tiendas Autorizadas]
+    F --> G[📊 Análisis de Stock]
+
+    G --> H{¿Stock disponible?}
+    H -->|❌| ERR2[❌ Error: Sin stock]
+    H -->|✅| I[🎯 Asignación Inteligente]
+
+    I --> J{¿Stock local suficiente?}
+    J -->|✅ Completo| K[📦 CASO SIMPLE]
+    J -->|⚠️ Parcial| L[🔄 CASO SPLIT]
+    J -->|❌ Solo nacional| M[🌍 CASO NACIONAL]
+
+    %% === CASO SIMPLE ===
+    K --> K1[💚 Stock 100% local]
+    K1 --> K2[🕒 Evaluar Horario]
+    K2 --> K3{¿EXPRESS factible?}
+    K3 -->|✅| K4[⚡ EXPRESS<br/>1-2 días]
+    K3 -->|❌| K5[📅 STANDARD<br/>2-3 días]
+    K4 --> SINGLE[📋 SINGLE DELIVERY]
+    K5 --> SINGLE
+
+    %% === CASO SPLIT (EL MÁS COMPLEJO) ===
+    L --> L1[🔀 Stock distribuido en múltiples tiendas]
+    L1 --> L2[🧠 Análisis Multi-Ruta]
+    L2 --> L3{¿Hay tiendas locales?}
+    L3 -->|✅| L4[🏠 OPCIÓN LOCAL<br/>Tiendas cercanas]
+    L3 -->|❌| L5[❌ Sin local]
+
+    L4 --> L6[🏭 OPCIÓN CONSOLIDADA<br/>Hub intermedio]
+    L5 --> L6
+    L6 --> L7[🌍 OPCIÓN NACIONAL<br/>Vía CEDIS]
+
+    L7 --> MULTI[📋 MULTIPLE DELIVERY<br/>2-3 opciones]
+
+    %% === CASO NACIONAL ===
+    M --> M1[🌐 Solo stock nacional disponible]
+    M1 --> M2[🏭 Evaluar CEDIS]
+    M2 --> M3{¿Distancia > 200km?}
+    M3 -->|✅| M4[📅 PROGRAMADA<br/>4-5 días]
+    M3 -->|❌| M5[📅 STANDARD<br/>2-3 días]
+    M4 --> SINGLE2[📋 SINGLE DELIVERY]
+    M5 --> SINGLE2
+
+    %% === EVALUACIÓN DE HORARIOS ===
+    HORARIO[🕒 EVALUACIÓN HORARIOS]
+    HORARIO --> H1{¿Hora compra?}
+    H1 -->|06:00-20:00| H2[⏰ Horario operativo]
+    H1 -->|20:01-23:59| H3[🌙 Nocturno]
+    H1 -->|00:00-05:59| H4[🌄 Madrugada]
+
+    H2 --> H5{¿Stock local?}
+    H3 --> H6[⚡ EXPRESS +1 día]
+    H4 --> H7[⚡ EXPRESS +1 día]
+
+    H5 -->|✅| H8[⚡ EXPRESS mismo día]
+    H5 -->|❌| H9[📅 STANDARD]
+
+    %% === FACTORES EXTERNOS ===
+    FACT[🌦️ FACTORES EXTERNOS]
+    FACT --> F1[🛡️ Zona Seguridad]
+    FACT --> F2[🌤️ Clima]
+    FACT --> F3[🚗 Tráfico]
+    FACT --> F4[📈 Demanda]
+
+    F1 --> FZ{¿Zona?}
+    FZ -->|🟢 Verde| FZ1[+0 días]
+    FZ -->|🟡 Amarilla| FZ2[+0 días]
+    FZ -->|🔴 Roja| FZ3[+1-2 días<br/>Solo PROGRAMADA]
+
+    %% === RESPUESTAS FINALES ===
+    SINGLE --> R1[📦 RESPUESTA SIMPLE]
+    SINGLE2 --> R1
+    MULTI --> R2[📦 RESPUESTA MÚLTIPLE]
+
+    R1 --> R1A[🎯 1 opción de entrega<br/>tipo_respuesta: single_delivery_date]
+    R2 --> R2A[🎯 2-3 opciones de entrega<br/>tipo_respuesta: multiple_delivery_dates]
+
+    R2A --> R2B[🏠 Opción Local: Stock cercano]
+    R2A --> R2C[🏭 Opción Consolidada: Hub]
+    R2A --> R2D[🌍 Opción Nacional: CEDIS]
+
+    %% === EJEMPLOS REALES ===
+    EJ[📋 EJEMPLOS REALES]
+    EJ --> EJ1[🎯 SINALOA 82000<br/>❌ Sin stock local<br/>✅ PROGRAMADA vía CEDIS<br/>🏭 2 tiendas origen]
+
+    EJ --> EJ2[🎯 CDMX 06700<br/>⚠️ Stock parcial local<br/>✅ MÚLTIPLE: 3 opciones<br/>🔄 Consolidación + Nacional]
+
+    EJ --> EJ3[🎯 SANTA FE 05050<br/>✅ Stock local completo<br/>✅ EXPRESS/STANDARD<br/>💚 Entrega directa]
+
+    %% === ESTILOS ===
+    classDef simple fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef complex fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef error fill:#ffebee,stroke:#c62828,stroke-width:2px
+    classDef success fill:#e8f5e8,stroke:#2e7d32,stroke-width:2px
+    classDef decision fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+
+    class K,K1,K2,K4,K5 simple
+    class L,L1,L2,L6,L7,M,M1,M2 complex
+    class ERR1,ERR2 error
+    class SINGLE,SINGLE2,MULTI,R1A,R2A success
+    class C,H,J,L3,M3,H1,H5,FZ decision

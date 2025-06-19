@@ -1,0 +1,104 @@
+flowchart TD
+    ROOT[🚀 REQUEST FEE<br/>quantity=51, cp=06700]
+
+    ROOT --> CHECK_STOCK[📦 Verificar Stock Total]
+    CHECK_STOCK --> STOCK_OK{¿Stock disponible ≥ cantidad?}
+
+    STOCK_OK -->|❌| NO_STOCK[❌ Error: Stock insuficiente]
+    STOCK_OK -->|✅| ANALYZE_LOCAL[🏠 Analizar Stock Local]
+
+    ANALYZE_LOCAL --> LOCAL_CHECK{📊 Stock local vs requerido}
+
+    %% ========== RAMA 1: STOCK LOCAL SUFICIENTE ==========
+    LOCAL_CHECK -->|Stock local ≥ cantidad<br/>ejemplo: local=34, need=51| SUFFICIENT[✅ STOCK LOCAL SUFICIENTE]
+
+    SUFFICIENT --> SIMPLE_FACTORS[🎯 Evaluar factores simples]
+    SIMPLE_FACTORS --> SIMPLE_DECISION[🔍 Una sola ruta óptima]
+    SIMPLE_DECISION --> SINGLE_RESULT[📦 SINGLE DELIVERY<br/>tipo_respuesta: single_delivery_date<br/>resultado_final: …]
+
+    %% ========== RAMA 2: STOCK LOCAL INSUFICIENTE ==========
+    LOCAL_CHECK -->|Stock local < cantidad<br/>ejemplo: local=16, need=51| INSUFFICIENT[⚠️ STOCK LOCAL INSUFICIENTE]
+
+    INSUFFICIENT --> NEED_NATIONAL[🌍 Buscar stock nacional]
+    NEED_NATIONAL --> NATIONAL_CHECK{¿Stock nacional suficiente?}
+
+    NATIONAL_CHECK -->|❌| NO_STOCK
+    NATIONAL_CHECK -->|✅| MULTI_SCENARIO[🔄 ESCENARIO MÚLTIPLE]
+
+    MULTI_SCENARIO --> EVALUATE_OPTIONS[🧠 Evaluar todas las opciones posibles]
+
+    %% ========== GENERACIÓN DE OPCIONES MÚLTIPLES ==========
+    EVALUATE_OPTIONS --> OPTION_A[🏠 OPCIÓN LOCAL<br/>Usar solo stock cercano]
+    EVALUATE_OPTIONS --> OPTION_B[🏭 OPCIÓN CONSOLIDADA<br/>Combinar múltiples tiendas]
+    EVALUATE_OPTIONS --> OPTION_C[🌍 OPCIÓN NACIONAL<br/>Usar CEDIS remotos]
+
+    OPTION_A --> CALC_A[📊 Calcular factibilidad<br/>cantidad_cubierta: 34/51<br/>costo: bajo<br/>tiempo: rápido]
+    OPTION_B --> CALC_B[📊 Calcular factibilidad<br/>cantidad_cubierta: 51/51<br/>costo: medio<br/>tiempo: medio]
+    OPTION_C --> CALC_C[📊 Calcular factibilidad<br/>cantidad_cubierta: 17/51<br/>costo: alto<br/>tiempo: lento]
+
+    CALC_A --> MULTIPLE_RESULT[📦 MULTIPLE DELIVERY<br/>tipo_respuesta: multiple_delivery_dates<br/>total_options: 3]
+    CALC_B --> MULTIPLE_RESULT
+    CALC_C --> MULTIPLE_RESULT
+
+    %% ========== CASOS ESPECIALES ==========
+    NATIONAL_CHECK -->|Solo 1 opción viable| FORCED_SINGLE[🎯 Una sola opción nacional]
+    FORCED_SINGLE --> SINGLE_NATIONAL[📦 SINGLE DELIVERY<br/>Tipo: PROGRAMADA]
+
+    %% ========== EJEMPLOS REALES ==========
+    EXAMPLES[📋 EJEMPLOS DE TUS TESTS]
+
+    EXAMPLES --> EX_SIMPLE[🟢 SIMPLE: CP 05050<br/>quantity=1, stock_local=34<br/>✅ Suficiente → SINGLE]
+    EX_SIMPLE --> EX_SIMPLE_R[📦 EXPRESS/STANDARD<br/>1 opción única]
+
+    EXAMPLES --> EX_MULTI[🟡 MÚLTIPLE: CP 06700<br/>quantity=51, stock_local=16<br/>⚠️ Insuficiente → MULTIPLE]
+    EX_MULTI --> EX_MULTI_R[📦 3 opciones:<br/>LOCAL + CONSOLIDADA + NACIONAL]
+
+    EXAMPLES --> EX_NACIONAL[🔴 NACIONAL: CP 82000<br/>quantity=51, stock_local=0<br/>❌ Sin local → SINGLE NACIONAL]
+    EX_NACIONAL --> EX_NACIONAL_R[📦 PROGRAMADA<br/>Vía CEDIS única]
+
+    %% ========== ALGORITMO DE DECISIÓN ==========
+    ALGORITHM[🤖 ALGORITMO DE DECISIÓN]
+    ALGORITHM --> ALG_1[1. stock_local ≥ quantity?]
+    ALG_1 -->|SÍ| ALG_SINGLE[→ SINGLE DELIVERY]
+    ALG_1 -->|NO| ALG_2[2. stock_nacional ≥ quantity?]
+    ALG_2 -->|NO| ALG_ERROR[→ ERROR]
+    ALG_2 -->|SÍ| ALG_3[3. ¿Múltiples rutas viables?]
+    ALG_3 -->|SÍ| ALG_MULTI[→ MULTIPLE DELIVERY]
+    ALG_3 -->|NO| ALG_FORCE[→ SINGLE DELIVERY forzado]
+
+    %% ========== CONDICIONES PARA MULTIPLE ==========
+    CONDITIONS[📋 CONDICIONES PARA MULTIPLE]
+    CONDITIONS --> C1[✓ Stock insuficiente localmente]
+    CONDITIONS --> C2[✓ Múltiples tiendas con stock]
+    CONDITIONS --> C3[✓ Diferentes rutas viables]
+    CONDITIONS --> C4[✓ Costos/tiempos variables]
+
+    %% ========== FACTORES DE EVALUACIÓN ==========
+    FACTORS[⚖️ FACTORES DE EVALUACIÓN]
+    FACTORS --> WEIGHT_TIME[⏰ Tiempo: 35%]
+    FACTORS --> WEIGHT_COST[💰 Costo: 35%]
+    FACTORS --> WEIGHT_STOCK[📦 Stock: 20%]
+    FACTORS --> WEIGHT_DIST[📏 Distancia: 10%]
+
+    %% ========== TIPOS DE RUTA POR CASO ==========
+    ROUTE_TYPES[🛣️ TIPOS DE RUTA]
+    ROUTE_TYPES --> RT_DIRECT[🏠 DIRECTA<br/>Tienda → Cliente<br/>Stock local suficiente]
+    ROUTE_TYPES --> RT_HUB[🏭 HUB<br/>Tiendas → Hub → Cliente<br/>Consolidación]
+    ROUTE_TYPES --> RT_CEDIS[🌍 CEDIS<br/>Tienda → CEDIS → Cliente<br/>Larga distancia]
+
+    %% ========== ESTILOS ==========
+    classDef sufficient fill:#e8f5e8,stroke:#4caf50,stroke-width:3px
+    classDef insufficient fill:#fff3e0,stroke:#ff9800,stroke-width:3px
+    classDef error fill:#ffebee,stroke:#f44336,stroke-width:3px
+    classDef single fill:#e3f2fd,stroke:#2196f3,stroke-width:3px
+    classDef multiple fill:#f3e5f5,stroke:#9c27b0,stroke-width:3px
+    classDef decision fill:#fff9c4,stroke:#fbc02d,stroke-width:2px
+    classDef example fill:#f1f8e9,stroke:#689f38,stroke-width:2px
+
+    class SUFFICIENT,CALC_A sufficient
+    class INSUFFICIENT,MULTI_SCENARIO,EVALUATE_OPTIONS insufficient
+    class NO_STOCK error
+    class SINGLE_RESULT,SINGLE_NATIONAL,ALG_SINGLE single
+    class MULTIPLE_RESULT,ALG_MULTI multiple
+    class LOCAL_CHECK,STOCK_OK,NATIONAL_CHECK,ALG_3 decision
+    class EX_SIMPLE,EX_MULTI,EX_NACIONAL,EXAMPLES example

@@ -1,0 +1,117 @@
+flowchart TD
+    START[🚀 PREDICCIÓN FEE<br/>SKU + Cantidad + CP] --> VALIDATE[📦 Validar Datos]
+    VALIDATE --> STOCK[📊 Análisis Stock]
+
+    STOCK --> DECISION{🎯 ¿Qué tipo de caso?}
+
+    %% === CASO 1: STOCK LOCAL COMPLETO ===
+    DECISION -->|Stock local ≥ cantidad| CASE1[💚 CASO SIMPLE<br/>Stock local suficiente]
+    CASE1 --> TIME1[🕒 Evaluar horario compra]
+    TIME1 --> TYPE1{¿Tipo entrega?}
+    TYPE1 -->|17:00 + local + verde| EXPRESS1[⚡ EXPRESS<br/>1 día]
+    TYPE1 -->|22:00 + local + verde| EXPRESS2[⚡ EXPRESS<br/>2 días<br/>+1 por nocturno]
+    TYPE1 -->|Otras condiciones| STANDARD1[📅 STANDARD<br/>2-3 días]
+
+    EXPRESS1 --> RESULT1
+    EXPRESS2 --> RESULT1
+    STANDARD1 --> RESULT1
+
+    RESULT1[📦 RESPUESTA SIMPLE<br/>&#123;tipo_respuesta: single_delivery_date&#125;]
+
+    %% === CASO 2: STOCK DISTRIBUIDO (MULTICASO) ===
+    DECISION -->|Stock local < cantidad<br/>Stock nacional ≥ cantidad| CASE2[🔄 CASO SPLIT<br/>Stock distribuido]
+    CASE2 --> ANALYZE[🧠 Analizar opciones múltiples]
+
+    ANALYZE --> OPT1[🏠 OPCIÓN LOCAL<br/>Lo que hay cerca]
+    ANALYZE --> OPT2[🏭 OPCIÓN CONSOLIDADA<br/>Hub intermedio]
+    ANALYZE --> OPT3[🌍 OPCIÓN NACIONAL<br/>Vía CEDIS]
+
+    OPT1 --> OPT1_CALC[📊 Liverpool Centro: 16u<br/>Liverpool Insurgentes: 18u<br/>= 34/51 unidades<br/>STANDARD 2-3 días]
+
+    OPT2 --> OPT2_CALC[📊 Todas las tiendas<br/>Hub: Liverpool Insurgentes<br/>51/51 unidades<br/>STANDARD 2-3 días<br/>Mayor costo]
+
+    OPT3 --> OPT3_CALC[📊 Liverpool Guadalajara<br/>Vía CEDIS Nacional<br/>17/51 unidades<br/>PROGRAMADA 4-5 días]
+
+    OPT1_CALC --> RESULT2
+    OPT2_CALC --> RESULT2
+    OPT3_CALC --> RESULT2
+
+    RESULT2[📦 RESPUESTA MÚLTIPLE<br/>&#123;tipo_respuesta: multiple_delivery_dates<br/>total_options: 3&#125;]
+
+    %% === CASO 3: SOLO STOCK NACIONAL ===
+    DECISION -->|Stock local = 0<br/>Stock nacional > 0| CASE3[🌍 CASO NACIONAL<br/>Sin stock local]
+    CASE3 --> DISTANCE{📏 Evaluar distancia}
+    DISTANCE -->|> 200 km o zona roja| PROGRAM[📅 PROGRAMADA<br/>4-5 días vía CEDIS]
+    DISTANCE -->|≤ 200 km y zona verde/amarilla| STANDARD3[📅 STANDARD<br/>2-3 días]
+
+    PROGRAM --> RESULT3
+    STANDARD3 --> RESULT3
+
+    RESULT3[📦 RESPUESTA SIMPLE<br/>&#123;tipo_respuesta: single_delivery_date&#125;]
+
+    %% === EJEMPLOS REALES DE TUS TESTS ===
+    EXAMPLES[📋 EJEMPLOS REALES]
+
+    EXAMPLES --> EX1[🎯 SANTA FE CP 05050<br/>LIV-002 Jeans x1<br/>📊 Stock local: 34 u<br/>✅ SUFICIENTE]
+    EX1 --> EX1_FLOW[💚 CASO SIMPLE]
+    EX1_FLOW --> EX1_TIME{🕒 Hora compra}
+    EX1_TIME -->|17:00| EX1_R1[⚡ EXPRESS 1 día<br/>2025-06-19 14:00]
+    EX1_TIME -->|22:00| EX1_R2[📅 STANDARD 3 días<br/>2025-06-21 15:00<br/>❌ PROBLEMA DETECTADO]
+
+    EXAMPLES --> EX2[🎯 CDMX CP 06700<br/>LIV-032 Mochila x51<br/>📊 Stock local: 16 u<br/>📊 Stock nacional: 70 u<br/>⚠️ INSUFICIENTE LOCAL]
+    EX2 --> EX2_FLOW[🔄 CASO SPLIT]
+    EX2_FLOW --> EX2_MULTI[📦 3 OPCIONES:<br/>1. LOCAL: 34u STANDARD<br/>2. CONSOLIDADA: 51u STANDARD<br/>3. NACIONAL: 17u PROGRAMADA]
+
+    EXAMPLES --> EX3[🎯 SINALOA CP 82000<br/>LIV-001 Polo x51<br/>📊 Stock local: 0 u<br/>📊 Stock nacional: 248 u<br/>❌ SIN STOCK LOCAL]
+    EX3 --> EX3_FLOW[🌍 CASO NACIONAL]
+    EX3_FLOW --> EX3_DIST[📏 Distancia: 712 km<br/>🛡️ Zona: Roja]
+    EX3_DIST --> EX3_R[📅 PROGRAMADA 5 días<br/>2025-06-23 16:00<br/>Vía CEDIS Culiacán]
+
+    %% === FACTORES DE DECISIÓN ===
+    FACTORS[🎛️ FACTORES CLAVE]
+    FACTORS --> F1[📦 Stock Local vs Nacional]
+    FACTORS --> F2[🕒 Horario de Compra]
+    FACTORS --> F3[📏 Distancia Total]
+    FACTORS --> F4[🛡️ Zona de Seguridad]
+    FACTORS --> F5[🔢 Cantidad Solicitada]
+
+    F1 --> F1_DESC[Local ≥ cantidad → Simple<br/>Local < cantidad → Split<br/>Local = 0 → Nacional]
+
+    F2 --> F2_DESC[06:00-20:00 → EXPRESS posible<br/>20:01-05:59 → +1 día<br/>Fin de semana → +1-2 días]
+
+    F3 --> F3_DESC[0-50 km → EXPRESS<br/>51-200 km → STANDARD<br/>>200 km → PROGRAMADA]
+
+    F4 --> F4_DESC[Verde/Amarilla → Normal<br/>Roja → Solo PROGRAMADA]
+
+    %% === ALGORITMO MULTICASO ===
+    ALGO[🧮 ALGORITMO MULTICASO]
+    ALGO --> A1[1. Identificar todas las tiendas con stock]
+    A1 --> A2[2. Agrupar por región/distancia]
+    A2 --> A3[3. Calcular rutas posibles]
+    A3 --> A4[4. Evaluar costos y tiempos]
+    A4 --> A5[5. Generar 2-3 mejores opciones]
+    A5 --> A6[6. Recomendar la óptima]
+
+    %% === TIPOS DE RESPUESTA ===
+    RESPONSE_TYPES[📊 TIPOS DE RESPUESTA]
+    RESPONSE_TYPES --> RT1[📦 SIMPLE<br/>1 opción única<br/>Mejor ruta]
+    RESPONSE_TYPES --> RT2[📦 MÚLTIPLE<br/>2-3 opciones<br/>Cliente elige]
+
+    RT2 --> RT2_1[🏠 LOCAL: Rápida, parcial]
+    RT2 --> RT2_2[🏭 CONSOLIDADA: Completa, costo medio]
+    RT2 --> RT2_3[🌍 NACIONAL: Completa, más lenta]
+
+    %% === ESTILOS ===
+    classDef simple fill:#e8f5e8,stroke:#2e7d32,stroke-width:3px
+    classDef split fill:#fff3e0,stroke:#f57c00,stroke-width:3px
+    classDef nacional fill:#e3f2fd,stroke:#1565c0,stroke-width:3px
+    classDef problem fill:#ffebee,stroke:#d32f2f,stroke-width:3px
+    classDef decision fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    classDef example fill:#f9fbe7,stroke:#33691e,stroke-width:2px
+
+    class CASE1,EXPRESS1,EXPRESS2,STANDARD1,RESULT1,EX1_FLOW simple
+    class CASE2,ANALYZE,OPT1,OPT2,OPT3,RESULT2,EX2_FLOW split
+    class CASE3,PROGRAM,STANDARD3,RESULT3,EX3_FLOW nacional
+    class EX1_R2 problem
+    class DECISION,TYPE1,DISTANCE,EX1_TIME decision
+    class EX1,EX2,EX3,EXAMPLES example
