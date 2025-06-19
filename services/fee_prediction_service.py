@@ -25,68 +25,115 @@ class FEEPredictionService:
         logger.info("Servicio FEE")
 
     async def predict_fee(self, request: PredictionRequest) -> Dict[str, Any]:
-        """🚀 Predicción FEE con respuesta simplificada y validación CSV completa"""
+        """🚀 MÉTODO PRINCIPAL MODIFICADO para manejar múltiples fechas"""
         start_time = time.time()
 
         try:
             logger.info(f"🎯 NUEVA PREDICCIÓN: {request.sku_id} → {request.codigo_postal} (qty: {request.cantidad})")
 
+            # Validaciones iniciales (sin cambios)
             csv_validation = self._validate_csv_data_integrity(request)
-            if csv_validation['warnings']:
-                for warning in csv_validation['warnings']:
-                    logger.warning(f"⚠️ {warning}")
-
             validation = await self._validate_request_dynamic(request)
             if not validation['valid']:
                 raise ValueError(validation['error'])
 
             product_info = validation['product']
             cp_info = validation['postal_info']
-
             external_factors = self._get_comprehensive_external_factors(request.fecha_compra, request.codigo_postal)
+
+            # Análisis de stock (sin cambios)
             nearby_stores = self.repos.store.find_stores_by_postal_range(request.codigo_postal)
             if not nearby_stores:
                 raise ValueError(f"No hay tiendas Liverpool cerca de {request.codigo_postal}")
 
-            stock_analysis = await self._analyze_stock_dynamic(
-                request, product_info, nearby_stores
-            )
-
+            stock_analysis = await self._analyze_stock_dynamic(request, product_info, nearby_stores)
             if not stock_analysis['factible']:
                 raise ValueError(f"Stock insuficiente: {stock_analysis['razon']}")
 
-            candidates = await self._generate_candidates_dynamic(
-                stock_analysis, cp_info, external_factors, request
+            # ✅ NUEVA LÓGICA: Detectar si necesita múltiples fechas
+            allocation_plan = stock_analysis['allocation_plan']
+            needs_multiple_dates = (
+                    len(allocation_plan) > 1 and  # Múltiples tiendas
+                    any(item.get('distancia_km', 0) > 200 for item in allocation_plan)  # Al menos una remota
             )
 
-            if not candidates:
-                raise ValueError("No se encontraron rutas factibles")
+            if needs_multiple_dates:
+                logger.info("🗓️ CASO COMPLEJO: Generando múltiples opciones de entrega")
 
-            ranked_candidates = self._rank_candidates_dynamic(candidates)
-            top_candidates = ranked_candidates[:3]
+                # Generar respuesta con múltiples fechas
+                multiple_response = await self._build_multiple_delivery_dates_response(
+                    request, stock_analysis, external_factors, cp_info, product_info
+                )
 
-            # Decisión de Gemini
-            gemini_decision = await self.gemini_engine.select_optimal_route(
-                top_candidates, request.dict(), external_factors
-            )
+                processing_time = (time.time() - start_time) * 1000
 
-            processing_time = (time.time() - start_time) * 1000
-            simplified_response = await self._build_simplified_response(
-                request, gemini_decision['candidato_seleccionado'],
-                ranked_candidates, stock_analysis, external_factors,
-                cp_info, product_info, processing_time
-            )
+                # Respuesta completa con múltiples opciones
+                if 'resultado_final' in multiple_response:
+                    multiple_response['resultado_final']['processing_time_ms'] = round(processing_time, 1)
 
-            simplified_response['metadata'] = {
-                'csv_sources_used': csv_validation['csv_sources'],
-                'warnings': csv_validation['warnings'],
-                'data_integrity': 'validated',
-                'version_sistema': '3.0.0'
-            }
-            self._log_data_sources(simplified_response)
+                response = {
+                    "request": {
+                        "timestamp": datetime.now().isoformat(),
+                        "sku_id": request.sku_id,
+                        "cantidad": request.cantidad,
+                        "codigo_postal": request.codigo_postal,
+                        "fecha_compra": request.fecha_compra.isoformat()
+                    },
+                    "producto": {
+                        "nombre": product_info.get('nombre_producto', 'N/A'),
+                        "marca": product_info.get('marca', 'N/A'),
+                        "precio_unitario_mxn": product_info.get('precio_venta', 0)
+                    },
+                    "tipo_respuesta": "multiple_delivery_dates",
+                    "factores_externos": self._extract_real_external_factors(external_factors, cp_info),
+                    **multiple_response,
+                    "processing_time_ms": round(processing_time, 1),
+                    "metadata": {
+                        "csv_sources_used": csv_validation['csv_sources'],
+                        "warnings": csv_validation['warnings'],
+                        "version_sistema": "3.0.0"
+                    }
+                }
 
-            logger.info(f"✅ Predicción completada en {processing_time:.1f}ms")
-            return simplified_response
+                logger.info(
+                    f"✅ Respuesta múltiple completada: {len(multiple_response.get('delivery_options', []))} opciones")
+                return response
+
+            else:
+                # ✅ FLUJO NORMAL (una sola fecha) - SIN CAMBIOS EN LA LÓGICA EXISTENTE
+                logger.info("📦 CASO SIMPLE: Una sola opción de entrega")
+
+                candidates = await self._generate_candidates_dynamic(
+                    stock_analysis, cp_info, external_factors, request
+                )
+
+                if not candidates:
+                    raise ValueError("No se encontraron rutas factibles")
+
+                ranked_candidates = self._rank_candidates_dynamic(candidates)
+                top_candidates = ranked_candidates[:3]
+
+                # Decisión de Gemini
+                gemini_decision = await self.gemini_engine.select_optimal_route(
+                    top_candidates, request.dict(), external_factors
+                )
+
+                processing_time = (time.time() - start_time) * 1000
+                simplified_response = await self._build_simplified_response(
+                    request, gemini_decision['candidato_seleccionado'],
+                    ranked_candidates, stock_analysis, external_factors,
+                    cp_info, product_info, processing_time
+                )
+
+                simplified_response['tipo_respuesta'] = "single_delivery_date"
+                simplified_response['metadata'].update({
+                    'csv_sources_used': csv_validation['csv_sources'],
+                    'warnings': csv_validation['warnings']
+                })
+
+                self._log_data_sources(simplified_response)
+                logger.info(f"✅ Predicción completada en {processing_time:.1f}ms")
+                return simplified_response
 
         except Exception as e:
             processing_time = (time.time() - start_time) * 1000
@@ -192,9 +239,29 @@ class FEEPredictionService:
 
         peso_kg_estimado = producto_info.get('peso_kg', 0.2) * request.cantidad
         zona_seguridad_real = cp_info.get('zona_seguridad', 'Verde')
+
+        allocation_plan = stock_analysis.get('allocation_plan', [])
+        has_local_stock = False
+
+        # Verificar si hay tiendas locales en el plan
+        for plan_item in allocation_plan:
+            distancia_km = plan_item.get('distancia_km', 999)
+            if distancia_km <= 100:  # Local ≤ 100km
+                has_local_stock = True
+                logger.info(f"✅ Stock local detectado: {plan_item.get('nombre_tienda', 'N/A')} a {distancia_km:.1f}km")
+                break
+
+        # También verificar tipo_stock
+        tipo_stock = stock_analysis.get('resumen_stock', {}).get('tipo_stock', '')
+        if tipo_stock == 'LOCAL':
+            has_local_stock = True
+            logger.info(f"✅ Stock local confirmado por tipo_stock: {tipo_stock}")
+
+
+        logger.info(f"🎯 has_local_stock final para FEE: {has_local_stock}")
         fee_calculation = self._calculate_dynamic_fee(
             selected_route, request, external_factors, cp_info,
-            stock_analysis=stock_analysis
+            stock_analysis=stock_analysis  # ✅ PASAR stock_analysis completo
         )
         candidatos_simplificados = []
         for candidate in all_candidates:
@@ -325,6 +392,44 @@ class FEEPredictionService:
                 "version_sistema": "3.0.0"
             }
         }
+
+    @staticmethod
+    def _calculate_has_local_stock(stock_analysis: Dict[str, Any]) -> bool:
+        """🏪 Calcula si hay stock local disponible"""
+
+        if not stock_analysis:
+            return False
+
+        # Método 1: Verificar tipo_stock
+        resumen_stock = stock_analysis.get('resumen_stock', {})
+        tipo_stock = resumen_stock.get('tipo_stock', '')
+
+        if tipo_stock == 'LOCAL':
+            logger.info(f"✅ Stock local por tipo_stock: {tipo_stock}")
+            return True
+
+        # Método 2: Verificar distancias en allocation_plan
+        allocation_plan = stock_analysis.get('allocation_plan', [])
+
+        for plan_item in allocation_plan:
+            distancia_km = plan_item.get('distancia_km', 999)
+            if distancia_km <= 100:  # Local ≤ 100km
+                tienda_nombre = plan_item.get('nombre_tienda', 'N/A')
+                logger.info(f"✅ Stock local por distancia: {tienda_nombre} a {distancia_km:.1f}km")
+                return True
+
+        # Método 3: Verificar campo es_local en stock_encontrado
+        stock_encontrado = stock_analysis.get('analysis_details', {}).get('stock_encontrado', [])
+
+        for stock_item in stock_encontrado:
+            es_local = stock_item.get('es_local', False)
+            if es_local:
+                tienda_nombre = stock_item.get('nombre_tienda', 'N/A')
+                logger.info(f"✅ Stock local por es_local: {tienda_nombre}")
+                return True
+
+        logger.info(f"❌ No se detectó stock local")
+        return False
 
 
     @staticmethod
@@ -818,9 +923,9 @@ class FEEPredictionService:
                                            cp_info: Dict[str, Any],
                                            external_factors: Dict[str, Any],
                                            request: PredictionRequest) -> List[Dict[str, Any]]:
-        """🗺️ Generación de candidatos con CONSOLIDACIÓN INTELIGENTE"""
+        """🗺️ Generación de candidatos con CONSOLIDACIÓN INTELIGENTE MEJORADA"""
 
-        allocation_plan = stock_analysis['allocation_plan']
+        allocation_plan = stock_analysis.get('allocation_plan', [])
         target_lat = cp_info['latitud_centro']
         target_lon = cp_info['longitud_centro']
         candidates = []
@@ -849,224 +954,132 @@ class FEEPredictionService:
         logger.info(f"📍 Tiendas locales (<50km): {len(local_stores)}")
         logger.info(f"📍 Tiendas remotas (>50km): {len(remote_stores)}")
 
+        # ✅ ESTRATEGIA 1: Rutas directas (mejorada)
         logger.info(f"\n📦 ESTRATEGIA 1: Múltiples paquetes directos")
         logger.info(f"{'-' * 50}")
-
-        total_cost_direct = 0
-        total_time_direct = 0
-        paquetes_info = []
 
         for plan_item in allocation_plan:
             tienda_origen = plan_item['store_info']
             distance = plan_item['distance_to_customer']
 
-            # Crear candidato directo
-            if distance <= 100:  # Local
+            # ✅ LÓGICA MEJORADA: Usar CEDIS para distancias >300km
+            if distance > 300:
+                logger.info(f"   🏭 {tienda_origen['nombre_tienda']}: {distance:.1f}km > 300km - Evaluando CEDIS")
+
+                # Crear ruta compleja con CEDIS
+                complex_route = await self._create_complex_routing_with_cedis(
+                    [plan_item],
+                    (target_lat, target_lon),
+                    request.codigo_postal,
+                    external_factors
+                )
+
+                if complex_route:
+                    candidates.append(complex_route)
+                    logger.info(
+                        f"   ✅ Ruta CEDIS creada: {complex_route['tiempo_total_horas']:.1f}h, ${complex_route['costo_total_mxn']:.0f}")
+
+            else:
+                # Ruta directa normal
                 direct_candidate = await self._create_direct_route_dynamic(
                     plan_item, (target_lat, target_lon), external_factors, request, cp_info
                 )
                 if direct_candidate:
                     candidates.append(direct_candidate)
-                    total_cost_direct += direct_candidate['costo_total_mxn']
-                    total_time_direct = max(total_time_direct, direct_candidate['tiempo_total_horas'])
 
-                    paquetes_info.append({
-                        'origen': tienda_origen['nombre_tienda'],
-                        'cantidad': plan_item['cantidad'],
-                        'costo': direct_candidate['costo_total_mxn'],
-                        'tiempo': direct_candidate['tiempo_total_horas']
-                    })
-            else:  # Remota - usar carrier externo
-                peso_envio = self._calculate_shipment_weight(request, plan_item['cantidad'])
+        # ✅ ESTRATEGIA 2: Consolidación inteligente (si hay mix local/remoto)
+        if local_stores and remote_stores:
+            logger.info(f"\n📦 ESTRATEGIA 2: Consolidación hub CDMX")
+            logger.info(f"{'-' * 50}")
+
+            # Encontrar mejor hub local
+            best_hub = max(local_stores, key=lambda x: x['stock_disponible'])
+            hub_info = best_hub['store_info']
+
+            logger.info(f"   🏪 Hub seleccionado: {hub_info['nombre_tienda']}")
+
+            # Evaluar si la consolidación vale la pena
+            total_direct_cost = 0
+            total_direct_time = 0
+
+            # Calcular costo directo de cada remota
+            for remote in remote_stores:
+                peso_envio = self._calculate_shipment_weight(request, remote['cantidad'])
                 carriers = self.repos.fleet.get_best_carriers_for_cp(request.codigo_postal, peso_envio)
 
                 if carriers:
                     best_carrier = carriers[0]
-                    costo_directo = self._calculate_external_fleet_cost(
-                        best_carrier, peso_envio, distance, external_factors
+                    remote_cost = self._calculate_external_fleet_cost(
+                        best_carrier, peso_envio, remote['distance_to_customer'], external_factors
                     )
-                    tiempo_directo = 72.0  # 3 días típico carrier
+                    total_direct_cost += remote_cost
+                    total_direct_time = max(total_direct_time, 72.0)  # 3 días carrier
 
-                    total_cost_direct += costo_directo
-                    total_time_direct = max(total_time_direct, tiempo_directo)
+            # Calcular costo consolidación
+            consolidation_cost = 0
+            consolidation_time = 4.0  # Base consolidación
 
-                    paquetes_info.append({
-                        'origen': tienda_origen['nombre_tienda'],
-                        'cantidad': plan_item['cantidad'],
-                        'costo': costo_directo,
-                        'tiempo': tiempo_directo,
-                        'carrier': best_carrier['carrier']
-                    })
-
-        logger.info(f"   Paquetes separados: {len(paquetes_info)}")
-        for i, paq in enumerate(paquetes_info, 1):
-            logger.info(f"   {i}. {paq['origen']}: {paq['cantidad']} unidades")
-            logger.info(f"      → Costo: ${paq['costo']:.0f}, Tiempo: {paq['tiempo']:.1f}h")
-            if 'carrier' in paq:
-                logger.info(f"      → Carrier: {paq['carrier']}")
-        logger.info(f"   📊 TOTALES: ${total_cost_direct:.0f}, {total_time_direct:.1f}h máximo")
-
-        # ESTRATEGIA 2: CONSOLIDACIÓN EN TIENDA CDMX
-        if remote_stores and local_stores:
-            logger.info(f"\n📦 ESTRATEGIA 2: Consolidación en tienda CDMX")
-            logger.info(f"{'-' * 50}")
-
-            best_consolidator = max(local_stores, key=lambda x: x['stock_disponible'])
-            consolidator_info = best_consolidator['store_info']
-
-            logger.info(f"   Hub consolidador: {consolidator_info['nombre_tienda']}")
-
-            total_cost_consolidated = 0
-            total_time_consolidated = 0
-            consolidation_steps = []
-
-            # Envíos remotos → consolidador
             for remote in remote_stores:
-                origen = remote['store_info']
-
-                # tienda remota → tienda consolidadora
+                # Costo transferencia remota → hub
                 distance_to_hub = GeoCalculator.calculate_distance_km(
-                    float(origen['latitud']), float(origen['longitud']),
-                    float(consolidator_info['latitud']), float(consolidator_info['longitud'])
+                    float(remote['store_info']['latitud']), float(remote['store_info']['longitud']),
+                    float(hub_info['latitud']), float(hub_info['longitud'])
                 )
-                tiempo_transferencia = self._calculate_travel_time_dynamic(
-                    distance_to_hub, 'FI', external_factors
-                )
-                costo_transferencia = distance_to_hub * 8.0
 
-                total_cost_consolidated += costo_transferencia
-                total_time_consolidated = max(total_time_consolidated, tiempo_transferencia + 4)
+                transfer_cost = distance_to_hub * 10.0  # $10/km transferencia
+                consolidation_cost += transfer_cost
+                consolidation_time = max(consolidation_time, distance_to_hub / 60.0 + 24)
 
-                consolidation_steps.append({
-                    'tipo': 'transferencia',
-                    'origen': origen['nombre_tienda'],
-                    'destino': consolidator_info['nombre_tienda'],
-                    'cantidad': remote['cantidad'],
-                    'distancia': distance_to_hub,
-                    'tiempo': tiempo_transferencia,
-                    'costo': costo_transferencia
-                })
+            # Entrega final consolidada
+            final_cost = 200.0  # Entrega consolidada
+            consolidation_cost += final_cost
+            consolidation_time += 4.0  # Entrega final
 
-                logger.info(f"   → {origen['nombre_tienda']} → {consolidator_info['nombre_tienda']}")
-                logger.info(f"     {remote['cantidad']} unidades, {distance_to_hub:.0f}km")
-                logger.info(f"     Costo: ${costo_transferencia:.0f}, Tiempo: {tiempo_transferencia:.1f}h")
-
-            # Entrega consolidada → cliente
-            cantidad_total = sum(item['cantidad'] for item in allocation_plan)
-            peso_consolidado = self._calculate_shipment_weight(request, cantidad_total)
-            distance_final = best_consolidator['distance_to_customer']
-
-            if distance_final <= 20:  # Última milla
-                costo_final = 150  # Tarifa plana última milla
-                tiempo_final = 4  # Mismo día
-                carrier_final = "Liverpool Express"
-            else:
-                carriers = self.repos.fleet.get_best_carriers_for_cp(request.codigo_postal, peso_consolidado)
-                if carriers:
-                    best_carrier = carriers[0]
-                    costo_final = best_carrier['costo_base_mxn']
-                    tiempo_final = 24  # Siguiente día
-                    carrier_final = best_carrier['carrier']
-                else:
-                    costo_final = 200
-                    tiempo_final = 24
-                    carrier_final = "Externo"
-
-            total_cost_consolidated += costo_final
-            total_time_consolidated += tiempo_final
-
-            logger.info(f"   → {consolidator_info['nombre_tienda']} → Cliente")
-            logger.info(f"     {cantidad_total} unidades consolidadas")
-            logger.info(f"     Costo: ${costo_final:.0f}, Tiempo: {tiempo_final:.1f}h")
-            logger.info(f"     Carrier: {carrier_final}")
-            logger.info(f"   📊 TOTALES: ${total_cost_consolidated:.0f}, {total_time_consolidated:.1f}h total")
-
-            if total_cost_consolidated < total_cost_direct * 0.8:
+            # ✅ Solo crear consolidación si es 20% más barata
+            if consolidation_cost < total_direct_cost * 0.8:
                 consolidated_candidate = {
-                    'ruta_id': f"consolidated_{consolidator_info['tienda_id']}",
-                    'tipo_ruta': 'consolidada',
-                    'origen_principal': f"Múltiples → {consolidator_info['nombre_tienda']} → Cliente",
-                    'estrategia': 'consolidacion_hub',
-                    'hub_consolidador': consolidator_info['nombre_tienda'],
-                    'segmentos': consolidation_steps,
-                    'tiempo_total_horas': total_time_consolidated,
-                    'costo_total_mxn': total_cost_consolidated,
-                    'distancia_total_km': sum(s['distancia'] for s in consolidation_steps) + distance_final,
-                    'probabilidad_cumplimiento': 0.75,
-                    'cantidad_cubierta': cantidad_total,
-                    'paquetes': 1,
-                    'ahorro_vs_directo': total_cost_direct - total_cost_consolidated,
-                    'factores_aplicados': ['consolidacion',
-                                           f'ahorro_${total_cost_direct - total_cost_consolidated:.0f}']
+                    'ruta_id': f"consolidated_{hub_info['tienda_id']}",
+                    'tipo_ruta': 'consolidada_hub',
+                    'origen_principal': f"Hub {hub_info['nombre_tienda']}",
+                    'tiempo_total_horas': consolidation_time,
+                    'costo_total_mxn': consolidation_cost,
+                    'distancia_total_km': sum(r['distance_to_customer'] for r in remote_stores),
+                    'probabilidad_cumplimiento': 0.8,
+                    'cantidad_cubierta': sum(item['cantidad'] for item in allocation_plan),
+                    'hub_consolidador': hub_info['nombre_tienda'],
+                    'factores_aplicados': [
+                        'consolidacion_hub',
+                        f'ahorro_${total_direct_cost - consolidation_cost:.0f}',
+                        'multiples_origenes'
+                    ]
                 }
                 candidates.append(consolidated_candidate)
 
-                logger.info(f"\n   ✅ CONSOLIDACIÓN VIABLE: Ahorro ${total_cost_direct - total_cost_consolidated:.0f}")
-
-        # ESTRATEGIA 3: HÍBRIDA (locales directo, remotas por carrier)
-        if remote_stores and local_stores:
-            logger.info(f"\n📦 ESTRATEGIA 3: Híbrida (locales FI, remotas carrier)")
-            logger.info(f"{'-' * 50}")
-
-            total_cost_hybrid = 0
-            total_time_hybrid = 0
-            hybrid_info = []
-
-            for local in local_stores:
-                direct_local = await self._create_direct_route_dynamic(
-                    local, (target_lat, target_lon), external_factors, request, cp_info
-                )
-                if direct_local:
-                    total_cost_hybrid += direct_local['costo_total_mxn']
-                    total_time_hybrid = max(total_time_hybrid, direct_local['tiempo_total_horas'])
-                    hybrid_info.append({
-                        'tipo': 'local_FI',
-                        'origen': local['store_info']['nombre_tienda'],
-                        'cantidad': local['cantidad'],
-                        'costo': direct_local['costo_total_mxn']
-                    })
-
-            for remote in remote_stores:
-                peso_envio = self._calculate_shipment_weight(request, remote['cantidad'])
-                # Buscar carrier express (no el más barato)
-                carriers = self.repos.fleet.get_best_carriers_for_cp(request.codigo_postal, peso_envio)
-
-                express_carrier = None
-                for carrier in carriers:
-                    if 'Express' in carrier.get('tipo_servicio', '') or carrier.get('tiempo_entrega_dias_habiles',
-                                                                                    '5') <= '2':
-                        express_carrier = carrier
-                        break
-
-                if express_carrier:
-                    costo_express = float(express_carrier['costo_base_mxn']) * 1.3  # Premium
-                    tiempo_express = 48  # 2 días
-
-                    total_cost_hybrid += costo_express
-                    total_time_hybrid = max(total_time_hybrid, tiempo_express)
-
-                    hybrid_info.append({
-                        'tipo': 'remota_express',
-                        'origen': remote['store_info']['nombre_tienda'],
-                        'cantidad': remote['cantidad'],
-                        'costo': costo_express,
-                        'carrier': express_carrier['carrier']
-                    })
-
-            logger.info(f"   Envíos locales FI: {len([h for h in hybrid_info if h['tipo'] == 'local_FI'])}")
-            logger.info(f"   Envíos express: {len([h for h in hybrid_info if h['tipo'] == 'remota_express'])}")
-            logger.info(f"   📊 TOTALES: ${total_cost_hybrid:.0f}, {total_time_hybrid:.1f}h máximo")
-
-        logger.info(f"\n🎯 RESUMEN DE ESTRATEGIAS:")
-        logger.info(f"{'=' * 60}")
-        logger.info(f"1. MÚLTIPLES PAQUETES: ${total_cost_direct:.0f} / {total_time_direct:.1f}h")
-        if 'total_cost_consolidated' in locals():
-            logger.info(f"2. CONSOLIDACIÓN HUB: ${total_cost_consolidated:.0f} / {total_time_consolidated:.1f}h")
-            logger.info(f"   → Ahorro: ${total_cost_direct - total_cost_consolidated:.0f}")
-        if 'total_cost_hybrid' in locals():
-            logger.info(f"3. HÍBRIDA: ${total_cost_hybrid:.0f} / {total_time_hybrid:.1f}h")
+                logger.info(f"   ✅ Consolidación viable: ${consolidation_cost:.0f} vs ${total_direct_cost:.0f} directo")
+                logger.info(
+                    f"   💰 Ahorro: ${total_direct_cost - consolidation_cost:.0f} ({((total_direct_cost - consolidation_cost) / total_direct_cost * 100):.1f}%)")
+            else:
+                logger.info(
+                    f"   ❌ Consolidación no rentable: ${consolidation_cost:.0f} vs ${total_direct_cost:.0f} directo")
 
         return candidates
+
+    def _should_evaluate_cedis(self, distance_km: float, cantidad: int, peso_kg: float) -> bool:
+        """🏭 Determina si evaluar CEDIS para ruteo"""
+
+        if distance_km > 300:
+            logger.info(f"📦 Distancia {distance_km:.1f}km > 300km: CEDIS recomendado")
+            return True
+
+        if peso_kg > 15:
+            logger.info(f"📦 Peso {peso_kg:.1f}kg > 15kg: CEDIS eficiente")
+            return True
+
+        if cantidad > 25:
+            logger.info(f"📦 Cantidad {cantidad} > 25 unidades: CEDIS para consolidación")
+            return True
+
+        return False
 
 
     async def _create_direct_route_dynamic(self, plan_item: Dict[str, Any],
@@ -1481,23 +1494,29 @@ class FEEPredictionService:
 
         return ranked
 
-
     def _calculate_dynamic_fee(self, selected_route: Dict[str, Any],
                                request: PredictionRequest,
                                external_factors: Dict[str, Any],
                                cp_info: Dict[str, Any],
-                               # NUEVO: Agregar stock_analysis
                                stock_analysis: Dict[str, Any] = None) -> FEECalculation:
-        """📅 Calcula FEE dinámico"""
+        """📅 Calcula FEE dinámico - VERSIÓN SIMPLIFICADA"""
 
         tiempo_total = selected_route['tiempo_total_horas']
 
+        # ✅ USAR FUNCIÓN HELPER
+        has_local_stock = self._calculate_has_local_stock(stock_analysis)
+        allocation_plan = stock_analysis.get('allocation_plan', []) if stock_analysis else []
+
+        logger.info(f"🎯 has_local_stock FINAL: {has_local_stock}")
 
         tipo_entrega = self._determine_delivery_type(
-            tiempo_total, request.fecha_compra, external_factors, cp_info,
+            tiempo_total,
+            request.fecha_compra,
+            external_factors,
+            cp_info,
             selected_route.get('distancia_total_km', 999),
-            selected_route.get('has_local_stock', False),
-            allocation_plan=stock_analysis.get('allocation_plan', []) if stock_analysis else [],
+            has_local_stock,  # ✅ CORRECTAMENTE CALCULADO
+            allocation_plan=allocation_plan,
             selected_route=selected_route
         )
 
@@ -1523,13 +1542,15 @@ class FEEPredictionService:
                                  distance_km: float, has_local_stock: bool,
                                  allocation_plan: List[Dict[str, Any]] = None,
                                  selected_route: Dict[str, Any] = None) -> TipoEntregaEnum:
-        """📦 Determina tipo de entrega CORREGIDO con lógica real de negocio"""
+        """📦 REGLAS FLASH CORREGIDAS - URGENTE"""
 
         hora_compra = fecha_compra.hour
         factor_demanda = external_factors.get('factor_demanda', 1.0)
         zona = cp_info.get('zona_seguridad', 'Verde')
-        cobertura = cp_info.get('cobertura_liverpool', False)
+        cobertura = cp_info.get('cobertura_liverpool', True)  # ✅ Default True
+        evento = external_factors.get('evento_detectado', 'Normal')
 
+        # Calcular métricas de la asignación
         is_split_inventory = len(allocation_plan) > 1 if allocation_plan else False
         max_distance_in_plan = 0
         total_cantidad = 0
@@ -1542,107 +1563,368 @@ class FEEPredictionService:
         is_complex_route = selected_route and selected_route.get('tipo_ruta') in ['compleja_cedis',
                                                                                   'multi_segmento_cedis']
 
-        logger.info(f"📦 Lógica mejorada:")
-        logger.info(f"   Hora compra: {hora_compra}h, Distancia max: {max_distance_in_plan:.1f}km")
-        logger.info(f"   Stock local: {has_local_stock}, Split inventory: {is_split_inventory}")
-        logger.info(
-            f"   Cantidad total: {total_cantidad}, Tiendas involucradas: {len(allocation_plan) if allocation_plan else 0}")
-        logger.info(f"   Ruta compleja: {is_complex_route}")
+        logger.info(f"📦 ANÁLISIS FLASH - REGLAS CORREGIDAS:")
+        logger.info(f"   🕐 Hora compra: {hora_compra}h (límite: <12h)")
+        logger.info(f"   📦 Stock local: {has_local_stock}")
+        logger.info(f"   📊 Factor demanda: {factor_demanda} (límite: ≤1.5)")
+        logger.info(f"   🎯 Evento: '{evento}'")
+        logger.info(f"   🛡️ Zona: {zona} (permitidas: Verde, Amarilla)")
+        logger.info(f"   📍 Cobertura Liverpool: {cobertura}")
+        logger.info(f"   📦 Split inventory: {is_split_inventory}")
+        logger.info(f"   📏 Distancia máxima: {max_distance_in_plan:.1f}km (límite: ≤80km)")
+        logger.info(f"   🔢 Total cantidad: {total_cantidad} (límite: ≤20 unidades)")
+        logger.info(f"   🗺️ Ruta compleja: {is_complex_route}")
 
-        # REGLA 1: FLASH
-        if (hora_compra < 12 and
-                has_local_stock and
-                not is_split_inventory and  # NUEVO: NO split inventory
-                max_distance_in_plan <= 50 and  # NUEVO: Usar distancia máxima real
-                total_cantidad <= 10 and  # NUEVO: Cantidad manejable
-                factor_demanda <= 1.2 and
-                zona in ['Verde', 'Amarilla'] and
-                cobertura and
-                not is_complex_route):  # NUEVO: NO rutas complejas
+        # ✅ REGLA FLASH - CORREGIDA Y DEPURADA
+        flash_conditions = {
+            'hora_ok': hora_compra < 12,
+            'stock_local': has_local_stock,
+            'no_split': not is_split_inventory,
+            'distancia_ok': max_distance_in_plan <= 80,  # ✅ 80km
+            'cantidad_ok': total_cantidad <= 20,  # ✅ 20 unidades
+            'demanda_ok': factor_demanda <= 1.5,  # ✅ 1.5 factor
+            'zona_ok': zona in ['Verde', 'Amarilla'],
+            'cobertura_ok': cobertura,
+            'no_compleja': not is_complex_route,
+            'evento_ok': evento not in ['Buen_Fin', 'Navidad', 'Black_Friday', 'Cyber_Monday']
+        }
 
-            logger.info("   → FLASH: Entrega mismo día (condiciones ideales)")
+        logger.info(f"   📋 VALIDACIÓN FLASH:")
+        for condition, value in flash_conditions.items():
+            status = "✅" if value else "❌"
+            logger.info(f"      {status} {condition}: {value}")
+
+        # ✅ DECISIÓN FLASH
+        if all(flash_conditions.values()):
+            logger.info("   🚀 RESULTADO: FLASH - Entrega mismo día ✅")
             return TipoEntregaEnum.FLASH
 
-        # REGLA 2: EXPRESS
-        elif (hora_compra < 20 and
-              has_local_stock and
-              max_distance_in_plan <= 100 and  # NUEVO: Todas las tiendas cercanas
-              total_cantidad <= 50 and  # NUEVO: Cantidad moderada
-              len(allocation_plan) <= 2 if allocation_plan else True and  # NUEVO: Máximo 2 tiendas
-                                                                factor_demanda <= 2.0 and
-                                                                zona in ['Verde', 'Amarilla'] and
-                                                                not is_complex_route):
+        # ✅ REGLA EXPRESS - SIMPLIFICADA
+        express_conditions = {
+            'hora_ok': hora_compra < 20,
+            'stock_disponible': has_local_stock or max_distance_in_plan <= 150,
+            'cantidad_ok': total_cantidad <= 50,
+            'tiendas_ok': len(allocation_plan) <= 2 if allocation_plan else True,
+            'demanda_ok': factor_demanda <= 2.0,
+            'zona_ok': zona in ['Verde', 'Amarilla'],
+            'no_compleja': not is_complex_route
+        }
 
-            logger.info("   → EXPRESS: Siguiente día hábil")
+        logger.info(f"   📋 VALIDACIÓN EXPRESS:")
+        for condition, value in express_conditions.items():
+            status = "✅" if value else "❌"
+            logger.info(f"      {status} {condition}: {value}")
+
+        if all(express_conditions.values()):
+            logger.info("   📦 RESULTADO: EXPRESS - Siguiente día hábil ✅")
             return TipoEntregaEnum.EXPRESS
 
-        # REGLA 3: STANDARD
-        elif (tiempo_horas <= 72 and
-              not is_complex_route and
-              (not allocation_plan or len(allocation_plan) <= 3)):  # NUEVO: Máximo 3 tiendas
+        # ✅ REGLA STANDARD
+        standard_conditions = {
+            'tiempo_ok': tiempo_horas <= 72,
+            'no_compleja': not is_complex_route,
+            'tiendas_ok': not allocation_plan or len(allocation_plan) <= 3,
+            'zona_ok': zona != 'Roja'
+        }
 
-            logger.info("   → STANDARD: 2-3 días (ruteo moderado)")
+        logger.info(f"   📋 VALIDACIÓN STANDARD:")
+        for condition, value in standard_conditions.items():
+            status = "✅" if value else "❌"
+            logger.info(f"      {status} {condition}: {value}")
+
+        if all(standard_conditions.values()):
+            logger.info("   📅 RESULTADO: STANDARD - 2-3 días ✅")
             return TipoEntregaEnum.STANDARD
 
-        # REGLA 4: PROGRAMADA - Casos muy complejos
-        else:
-            razones = []
-            if is_split_inventory and len(allocation_plan) > 3:
-                razones.append(f"split desde {len(allocation_plan)} tiendas")
-            if max_distance_in_plan > 500:
-                razones.append(f"distancia máxima {max_distance_in_plan:.0f}km")
-            if is_complex_route:
-                razones.append("ruteo con CEDIS")
-            if total_cantidad > 50:
-                razones.append(f"cantidad alta ({total_cantidad} unidades)")
+        # ✅ PROGRAMADA (casos complejos)
+        razones = []
+        if is_split_inventory and len(allocation_plan) > 3:
+            razones.append(f"split desde {len(allocation_plan)} tiendas")
+        if max_distance_in_plan > 500:
+            razones.append(f"distancia máxima {max_distance_in_plan:.0f}km")
+        if is_complex_route:
+            razones.append("ruteo con CEDIS")
+        if zona == 'Roja':
+            razones.append("zona roja")
+        if factor_demanda > 2.5:
+            razones.append("temporada crítica")
 
-            logger.info(f"   → PROGRAMADA: Caso complejo - {', '.join(razones)}")
-            return TipoEntregaEnum.PROGRAMADA
+        logger.info(f"   🗓️ RESULTADO: PROGRAMADA - {', '.join(razones) if razones else 'Caso complejo'} ✅")
+        return TipoEntregaEnum.PROGRAMADA
+
+    async def _build_multiple_delivery_dates_response(self, request: PredictionRequest,
+                                                      stock_analysis: Dict[str, Any],
+                                                      external_factors: Dict[str, Any],
+                                                      cp_info: Dict[str, Any],
+                                                      producto_info: Dict[str, Any]) -> Dict[str, Any]:
+        """🗓️ Genera múltiples fechas de entrega para casos complejos - CORREGIDO"""
+
+        allocation_plan = stock_analysis['allocation_plan']
+
+        # Separar por distancia
+        local_deliveries = []
+        remote_deliveries = []
+
+        for plan_item in allocation_plan:
+            if plan_item.get('distancia_km', 0) <= 100:
+                local_deliveries.append(plan_item)
+            else:
+                remote_deliveries.append(plan_item)
+
+        delivery_options = []
+
+        # ✅ OPCIÓN 1: Entregas locales (FI directa)
+        if local_deliveries:
+            total_local_units = sum(item['cantidad'] for item in local_deliveries)
+
+            # Crear ruta directa local
+            local_route = await self._create_local_direct_route(
+                local_deliveries, request, external_factors, cp_info
+            )
+
+            local_fee = self._calculate_dynamic_fee(
+                local_route, request, external_factors, cp_info, stock_analysis
+            )
+
+            delivery_options.append({
+                'opcion': 'entrega_local',
+                'descripcion': f'{total_local_units} unidades desde tiendas CDMX',
+                'tipo_entrega': local_fee.tipo_entrega.value,
+                'fecha_entrega': local_fee.fecha_entrega_estimada.isoformat(),
+                'ventana_entrega': {
+                    'inicio': local_fee.rango_horario_entrega['inicio'].strftime('%H:%M'),
+                    'fin': local_fee.rango_horario_entrega['fin'].strftime('%H:%M')
+                },
+                'costo_envio': round(local_route['costo_total_mxn'], 2),
+                'probabilidad_cumplimiento': local_route['probabilidad_cumplimiento'],
+                'tiendas_origen': [item['nombre_tienda'] for item in local_deliveries],
+                'logistica': {
+                    'tipo_ruta': 'directa_local',
+                    'flota': 'FI',
+                    'tiempo_total_h': round(local_route['tiempo_total_horas'], 1)
+                }
+            })
+
+        # ✅ OPCIÓN 2: Entregas remotas (vía CEDIS)
+        if remote_deliveries:
+            total_remote_units = sum(item['cantidad'] for item in remote_deliveries)
+
+            # Crear ruta compleja con CEDIS
+            complex_route = await self._create_complex_routing_with_cedis(
+                remote_deliveries,
+                (cp_info['latitud_centro'], cp_info['longitud_centro']),
+                request.codigo_postal,
+                external_factors
+            )
+
+            if complex_route:
+                complex_fee = self._calculate_dynamic_fee(
+                    complex_route, request, external_factors, cp_info, stock_analysis
+                )
+
+                delivery_options.append({
+                    'opcion': 'entrega_nacional',
+                    'descripcion': f'{total_remote_units} unidades vía CEDIS',
+                    'tipo_entrega': complex_fee.tipo_entrega.value,
+                    'fecha_entrega': complex_fee.fecha_entrega_estimada.isoformat(),
+                    'ventana_entrega': {
+                        'inicio': complex_fee.rango_horario_entrega['inicio'].strftime('%H:%M'),
+                        'fin': complex_fee.rango_horario_entrega['fin'].strftime('%H:%M')
+                    },
+                    'costo_envio': round(complex_route['costo_total_mxn'], 2),
+                    'probabilidad_cumplimiento': complex_route['probabilidad_cumplimiento'],
+                    'tiendas_origen': [item['nombre_tienda'] for item in remote_deliveries],
+                    'logistica': {
+                        'tipo_ruta': 'compleja_cedis',
+                        'flota': 'FI_FE_hibrida',
+                        'tiempo_total_h': round(complex_route['tiempo_total_horas'], 1),
+                        'cedis_intermedio': complex_route.get('cedis_intermedio', 'N/A'),
+                        'segmentos': len(complex_route.get('segmentos', []))
+                    }
+                })
+
+        # ✅ OPCIÓN 3: Entrega consolidada (si aplica)
+        if len(allocation_plan) > 1 and local_deliveries and remote_deliveries:
+            # Calcular consolidación en hub CDMX
+            consolidation_route = await self._create_consolidation_route(
+                allocation_plan, request, external_factors, cp_info
+            )
+
+            if consolidation_route:
+                consol_fee = self._calculate_dynamic_fee(
+                    consolidation_route, request, external_factors, cp_info, stock_analysis
+                )
+
+                delivery_options.append({
+                    'opcion': 'entrega_consolidada',
+                    'descripcion': f'{request.cantidad} unidades consolidadas en hub CDMX',
+                    'tipo_entrega': consol_fee.tipo_entrega.value,
+                    'fecha_entrega': consol_fee.fecha_entrega_estimada.isoformat(),
+                    'ventana_entrega': {
+                        'inicio': consol_fee.rango_horario_entrega['inicio'].strftime('%H:%M'),
+                        'fin': consol_fee.rango_horario_entrega['fin'].strftime('%H:%M')
+                    },
+                    'costo_envio': round(consolidation_route['costo_total_mxn'], 2),
+                    'probabilidad_cumplimiento': consolidation_route['probabilidad_cumplimiento'],
+                    'tiendas_origen': [item['nombre_tienda'] for item in allocation_plan],
+                    'logistica': {
+                        'tipo_ruta': 'consolidada_hub',
+                        'flota': 'FI_FE_consolidada',
+                        'tiempo_total_h': round(consolidation_route['tiempo_total_horas'], 1),
+                        'hub_consolidacion': consolidation_route.get('hub_consolidador', 'CDMX')
+                    }
+                })
+
+        # ✅ CRÍTICO: Seleccionar mejor opción como resultado_final
+        if not delivery_options:
+            # Fallback si no hay opciones
+            mejor_opcion = {
+                'tipo_entrega': 'STANDARD',
+                'fecha_entrega': (datetime.now() + timedelta(days=5)).isoformat(),
+                'ventana_entrega': {'inicio': '13:00', 'fin': '17:00'},
+                'costo_envio': 500.0,
+                'probabilidad_cumplimiento': 0.7
+            }
+        else:
+            # Ordenar por fecha más temprana, luego por probabilidad
+            delivery_options.sort(key=lambda x: (x['fecha_entrega'], -x['probabilidad_cumplimiento']))
+            mejor_opcion = delivery_options[0]
+
+        # ✅ CONSTRUIR resultado_final OBLIGATORIO
+        resultado_final = {
+            "tipo_entrega": mejor_opcion['tipo_entrega'],
+            "fecha_entrega_estimada": mejor_opcion['fecha_entrega'],
+            "ventana_entrega": mejor_opcion['ventana_entrega'],
+            "costo_mxn": mejor_opcion['costo_envio'],
+            "probabilidad_exito": mejor_opcion['probabilidad_cumplimiento'],
+            "processing_time_ms": 0,  # Se establecerá en el caller
+            "confianza_prediccion": 0.85
+        }
+
+        return {
+            'multiple_delivery_options': True,
+            'total_options': len(delivery_options),
+            'delivery_options': delivery_options,
+            'resultado_final': resultado_final,  # ✅ CRÍTICO: Campo obligatorio
+            'recommendation': mejor_opcion,
+            'split_reason': f'Stock distribuido en {len(allocation_plan)} tiendas',
+            'consolidation_available': len(delivery_options) >= 3
+        }
+
+    async def _create_consolidation_route(self, allocation_plan: List[Dict[str, Any]],
+                                          request: PredictionRequest,
+                                          external_factors: Dict[str, Any],
+                                          cp_info: Dict[str, Any]) -> Dict[str, Any]:
+        """🔄 Crea ruta de consolidación en hub CDMX"""
+
+        # Encontrar mejor hub (tienda CDMX con más capacidad)
+        cdmx_stores = [item for item in allocation_plan if item.get('distancia_km', 999) <= 100]
+
+        if not cdmx_stores:
+            return None
+
+        hub_store = max(cdmx_stores, key=lambda x: x['stock_disponible'])
+
+        # Calcular tiempo total incluyendo consolidación
+        consolidation_time = 4.0  # 4 horas para consolidar
+        delivery_time = 2.0  # 2 horas entrega final
+
+        total_time = consolidation_time + delivery_time
+        total_cost = 200.0  # Costo base consolidación
+
+        # Sumar costos de transferencias
+        for item in allocation_plan:
+            if item['tienda_id'] != hub_store['tienda_id']:
+                transfer_distance = item.get('distancia_km', 0)
+                total_cost += transfer_distance * 10.0  # $10/km transferencia
+
+        return {
+            'ruta_id': f"consolidated_{hub_store['tienda_id']}",
+            'tipo_ruta': 'consolidada_hub',
+            'origen_principal': f"Hub {hub_store['nombre_tienda']}",
+            'hub_consolidador': hub_store['nombre_tienda'],
+            'tiempo_total_horas': total_time,
+            'costo_total_mxn': total_cost,
+            'distancia_total_km': sum(item.get('distancia_km', 0) for item in allocation_plan),
+            'probabilidad_cumplimiento': 0.85,
+            'cantidad_cubierta': sum(item['cantidad'] for item in allocation_plan),
+            'factores_aplicados': ['consolidacion_hub', 'multiples_origenes']
+        }
+
+    async def _create_local_direct_route(self, local_deliveries: List[Dict[str, Any]],
+                                         request: PredictionRequest,
+                                         external_factors: Dict[str, Any],
+                                         cp_info: Dict[str, Any]) -> Dict[str, Any]:
+        """🏪 Crea ruta directa local optimizada"""
+
+        # Tomar la tienda más cercana con más stock
+        best_local = max(local_deliveries, key=lambda x: (x['stock_disponible'], -x['distancia_km']))
+
+        target_coords = (cp_info['latitud_centro'], cp_info['longitud_centro'])
+
+        local_route = await self._create_direct_route_dynamic(
+            best_local, target_coords, external_factors, request, cp_info
+        )
+
+        # Ajustar cantidad total
+        local_route['cantidad_cubierta'] = sum(item['cantidad'] for item in local_deliveries)
+        local_route['origen_principal'] = f"Consolidado desde {len(local_deliveries)} tiendas CDMX"
+
+        return local_route
 
     def _calculate_delivery_date(self, fecha_compra: datetime, tiempo_horas: float,
                                  tipo_entrega: TipoEntregaEnum, external_factors: Dict[str, Any],
                                  hora_compra: int = None) -> datetime:
-        """📅 Cálculo CORREGIDO de fecha de entrega"""
+        """📅 CÁLCULO FECHA CORREGIDO - FLASH mismo día"""
 
         if hora_compra is None:
             hora_compra = fecha_compra.hour
 
-        logger.info(f"📅 CÁLCULO FECHA CORREGIDO:")
-        logger.info(f"   Tipo: {tipo_entrega.value}, Hora compra: {hora_compra}h")
+        logger.info(f"📅 CALCULANDO FECHA ENTREGA:")
+        logger.info(f"   Tipo: {tipo_entrega.value}")
+        logger.info(f"   Hora compra: {hora_compra}h")
+        logger.info(f"   Fecha compra: {fecha_compra.strftime('%Y-%m-%d %H:%M')}")
 
         if tipo_entrega == TipoEntregaEnum.FLASH:
-            # FLASH: Mismo día, entrega tarde
+            # ✅ FLASH: MISMO DÍA
             if hora_compra <= 10:
-                entrega = fecha_compra.replace(hour=16, minute=0, second=0)  # 4 PM mismo día
+                # Compra temprano → entrega tarde
+                entrega = fecha_compra.replace(hour=16, minute=0, second=0, microsecond=0)
+                logger.info(f"   📦 FLASH temprano: {entrega.strftime('%Y-%m-%d %H:%M')} (6 horas después)")
+            elif hora_compra <= 11:
+                # Compra media mañana → entrega noche
+                entrega = fecha_compra.replace(hour=18, minute=0, second=0, microsecond=0)
+                logger.info(f"   📦 FLASH medio: {entrega.strftime('%Y-%m-%d %H:%M')} (7 horas después)")
             else:
-                entrega = fecha_compra.replace(hour=19, minute=0, second=0)  # 7 PM mismo día
+                # Compra antes de mediodía → entrega noche
+                entrega = fecha_compra.replace(hour=19, minute=0, second=0, microsecond=0)
+                logger.info(f"   📦 FLASH tardío: {entrega.strftime('%Y-%m-%d %H:%M')} (8 horas después)")
 
-            logger.info(f"   FLASH: Mismo día {entrega.strftime('%Y-%m-%d %H:%M')}")
+            logger.info(f"   ✅ FLASH CONFIRMADO: MISMO DÍA {entrega.strftime('%Y-%m-%d %H:%M')}")
+            return entrega
 
         elif tipo_entrega == TipoEntregaEnum.EXPRESS:
             # EXPRESS: Siguiente día hábil
             next_day = self._get_next_business_day(fecha_compra)
-            entrega = next_day.replace(hour=14, minute=0, second=0)
-
-            logger.info(f"   EXPRESS: Siguiente día {entrega.strftime('%Y-%m-%d %H:%M')}")
+            entrega = next_day.replace(hour=14, minute=0, second=0, microsecond=0)
+            logger.info(f"   📦 EXPRESS: Siguiente día {entrega.strftime('%Y-%m-%d %H:%M')}")
+            return entrega
 
         elif tipo_entrega == TipoEntregaEnum.STANDARD:
-            # STANDARD: 2-3 días considerando ruteo
+            # STANDARD: 2-3 días
             days_to_add = 2 if hora_compra <= 12 else 3
             entrega = fecha_compra + timedelta(days=days_to_add)
-            entrega = self._ensure_business_day(entrega).replace(hour=15, minute=0, second=0)
-
-            logger.info(f"   STANDARD: {days_to_add} días {entrega.strftime('%Y-%m-%d %H:%M')}")
+            entrega = self._ensure_business_day(entrega).replace(hour=15, minute=0, second=0, microsecond=0)
+            logger.info(f"   📦 STANDARD: {days_to_add} días → {entrega.strftime('%Y-%m-%d %H:%M')}")
+            return entrega
 
         else:
             # PROGRAMADA: 4-7 días
             days_to_add = max(4, int(tiempo_horas / 24) + 2)
             entrega = fecha_compra + timedelta(days=days_to_add)
-            entrega = self._ensure_business_day(entrega).replace(hour=16, minute=0, second=0)
-
-            logger.info(f"   PROGRAMADA: {days_to_add} días {entrega.strftime('%Y-%m-%d %H:%M')}")
-
-        return entrega
+            entrega = self._ensure_business_day(entrega).replace(hour=16, minute=0, second=0, microsecond=0)
+            logger.info(f"   📦 PROGRAMADA: {days_to_add} días → {entrega.strftime('%Y-%m-%d %H:%M')}")
+            return entrega
 
     async def _create_complex_routing_with_cedis(self,
                                                  stock_plan: List[Dict[str, Any]],
@@ -1654,6 +1936,7 @@ class FEEPredictionService:
         origen_store = await self._get_store_info(stock_plan[0]['tienda_id'])
         optimal_cedis = await self._find_optimal_cedis_real(origen_store, codigo_postal)
         destino_store = await self._find_closest_store_to_cp(codigo_postal)
+
         # 4. Calcular ruta: Origen → CEDIS → Tienda Destino → Cliente
         route_segments = []
         total_time = 0
@@ -1678,7 +1961,7 @@ class FEEPredictionService:
             optimal_cedis, destino_store, 'FI', external_factors
         )
         route_segments.append(seg2)
-        total_time += seg2['tiempo_horas'] + 1  # Tiempo prep tienda destino
+        total_time += seg2['tiempo_horas'] + 1
         total_cost += seg2['costo']
         total_distance += seg2['distancia_km']
 
@@ -1691,21 +1974,26 @@ class FEEPredictionService:
         total_cost += seg3['costo']
         total_distance += seg3['distancia_km']
 
-        #  factores externos
+        # Aplicar factores externos
         factor_tiempo = external_factors.get('impacto_tiempo_extra_horas', 0)
         total_time += factor_tiempo
 
         # Probabilidad para rutas complejas
         probability = max(0.65, 0.85 - (len(route_segments) * 0.05))
 
+        # ✅ CORRECCIÓN: Asegurar que cedis_intermedio se asigne correctamente
+        cedis_name = optimal_cedis.get('nombre_cedis', 'CEDIS Desconocido')
+
         result = {
             'ruta_id': f"complex_{origen_store['tienda_id']}_{optimal_cedis['cedis_id']}_{destino_store['tienda_id']}",
             'tipo_ruta': 'compleja_cedis',
+            'cedis_intermedio': cedis_name,  # ✅ CORRECCIÓN: Asignar nombre real del CEDIS
             'segmentos': route_segments,
             'tiempo_total_horas': total_time,
             'costo_total_mxn': total_cost,
             'distancia_total_km': total_distance,
             'probabilidad_cumplimiento': probability,
+            'cantidad_cubierta': sum(item['cantidad'] for item in stock_plan),
             'desglose_detallado': {
                 'tiempo_origen_prep': origen_store.get('tiempo_prep_horas', 2),
                 'tiempo_origen_cedis': seg1['tiempo_horas'],
@@ -1975,7 +2263,7 @@ class FEEPredictionService:
         )
 
         flota_df = self.repos.data_manager.get_data('flota_externa')
-        peso_estimado = 1.0  # Peso promedio del paquete
+        peso_estimado = 1.0
 
         cp_int = int(codigo_postal)
         available_carriers = []
@@ -1988,23 +2276,17 @@ class FEEPredictionService:
 
         if available_carriers:
             best_carrier = min(available_carriers, key=lambda x: x.get('costo_base_mxn', 999))
-
             costo_base = float(best_carrier['costo_base_mxn'])
-
-            # TODO-> CORRECCIÓN:  rangos de tiempo como "3-5"
             dias_entrega = int(self._parse_time_range(
                 best_carrier.get('tiempo_entrega_dias_habiles'), default=2.0
             ))
-
             tiempo_entrega_horas = dias_entrega * 24
-
             carrier_name = best_carrier['carrier']
             tipo_servicio = best_carrier.get('tipo_servicio', 'Standard')
 
             logger.info(f"📦 Carrier final: {carrier_name} - {tipo_servicio} "
                         f"(${costo_base}, {dias_entrega} días, {tiempo_entrega_horas}h)")
         else:
-            # Fallback mínimo
             costo_base = 150.0
             tiempo_entrega_horas = 48
             carrier_name = 'Externo'
@@ -2050,40 +2332,59 @@ class FEEPredictionService:
 
         return fecha
 
-    # ✅ CORRECCIÓN: Ventana de 5 horas como solicitado
     @staticmethod
     def _calculate_time_window(fecha_entrega: datetime, tipo_entrega: TipoEntregaEnum) -> Dict[str, dt_time]:
-        """🕐 Ventana de entrega AMPLIADA (5 horas)"""
+        """🕐 Ventana entrega CORREGIDA para FLASH"""
 
-        logger.info(f"🕐 Calculando ventana AMPLIADA para: {fecha_entrega.strftime('%Y-%m-%d %H:%M')}")
+        logger.info(f"🕐 Calculando ventana para: {fecha_entrega.strftime('%Y-%m-%d %H:%M')}")
 
         if tipo_entrega == TipoEntregaEnum.FLASH:
-            ventana_horas = 3  # ±1.5h para FLASH
+            # ✅ FLASH: Ventana de 2 horas alrededor de la hora estimada
+            inicio_ventana = fecha_entrega - timedelta(hours=1)
+            fin_ventana = fecha_entrega + timedelta(hours=1)
+
+            # Ajustar a horarios válidos (10 AM - 8 PM)
+            if inicio_ventana.hour < 10:
+                inicio_ventana = inicio_ventana.replace(hour=10, minute=0)
+            if fin_ventana.hour >= 20:
+                fin_ventana = fin_ventana.replace(hour=20, minute=0)
+
+            logger.info(f"   FLASH: {inicio_ventana.strftime('%H:%M')} - {fin_ventana.strftime('%H:%M')} (mismo día)")
+
+            return {
+                'inicio': inicio_ventana.time(),
+                'fin': fin_ventana.time()
+            }
+
+        elif tipo_entrega == TipoEntregaEnum.EXPRESS:
+            # EXPRESS: Ventana de 3 horas
+            inicio_ventana = fecha_entrega - timedelta(hours=1, minutes=30)
+            fin_ventana = fecha_entrega + timedelta(hours=1, minutes=30)
+
+            logger.info(f"   EXPRESS: {inicio_ventana.strftime('%H:%M')} - {fin_ventana.strftime('%H:%M')}")
+
+            return {
+                'inicio': inicio_ventana.time(),
+                'fin': fin_ventana.time()
+            }
+
         else:
-            ventana_horas = 5  # ±2.5h para todos los demás
+            # STANDARD/PROGRAMADA: Ventana de 4 horas
+            inicio_ventana = fecha_entrega - timedelta(hours=2)
+            fin_ventana = fecha_entrega + timedelta(hours=2)
 
-        inicio_ventana = fecha_entrega - timedelta(hours=ventana_horas // 2)
-        fin_ventana = fecha_entrega + timedelta(hours=ventana_horas // 2)
+            # Ajustar a horarios válidos
+            if inicio_ventana.hour < 10:
+                inicio_ventana = inicio_ventana.replace(hour=10, minute=0)
+            if fin_ventana.hour >= 18:
+                fin_ventana = fin_ventana.replace(hour=18, minute=0)
 
-        #  horarios de entrega
-        HORA_MIN = 9
-        HORA_MAX = 19
+            logger.info(f"   STANDARD/PROGRAMADA: {inicio_ventana.strftime('%H:%M')} - {fin_ventana.strftime('%H:%M')}")
 
-        if inicio_ventana.hour < HORA_MIN:
-            inicio_ventana = inicio_ventana.replace(hour=HORA_MIN, minute=0)
-        if fin_ventana.hour >= HORA_MAX:
-            fin_ventana = fin_ventana.replace(hour=HORA_MAX, minute=0)
-
-        if fin_ventana <= inicio_ventana:
-            fin_ventana = inicio_ventana + timedelta(hours=2)
-
-        logger.info(
-            f"   Ventana AMPLIADA: {inicio_ventana.strftime('%H:%M')} - {fin_ventana.strftime('%H:%M')} ({ventana_horas}h)")
-
-        return {
-            'inicio': inicio_ventana.time(),
-            'fin': fin_ventana.time()
-        }
+            return {
+                'inicio': inicio_ventana.time(),
+                'fin': fin_ventana.time()
+            }
 
     @staticmethod
     def _get_next_business_day(fecha: datetime) -> datetime:

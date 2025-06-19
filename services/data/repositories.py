@@ -221,11 +221,11 @@ class OptimizedStockRepository:
         if not stock_locations:
             return {'factible': False, 'razon': 'Sin stock disponible', 'plan': []}
 
-        # ✅ CONFIGURACIÓN DE UMBRALES DE NEGOCIO
-        MIN_UNITS_REGIONAL = 5  # Mínimo para envío 50-200km
-        MIN_UNITS_REMOTE = 10  # Mínimo para envío 200-500km
-        MIN_UNITS_FAR = 15  # Mínimo para envío >500km
-        MAX_COST_PER_UNIT = 500  # Costo máximo aceptable por unidad
+        # ✅ UMBRALES CORREGIDOS - MÁS FLEXIBLES
+        MIN_UNITS_REGIONAL = 3  # ✅ REDUCIDO de 5 a 3
+        MIN_UNITS_REMOTE = 5  # ✅ REDUCIDO de 10 a 5
+        MIN_UNITS_FAR = 8  # ✅ REDUCIDO de 15 a 8
+        MAX_COST_PER_UNIT = 800  # ✅ AUMENTADO de 500 a 800
 
         # ✅ 1. CONTEXTO DEL DESTINO
         contexto = self._get_destination_context(codigo_postal, fecha_entrega) if codigo_postal else {}
@@ -276,18 +276,12 @@ class OptimizedStockRepository:
             is_viable = True
             viability_reason = ""
 
-            if distancia > 500 and units_available < MIN_UNITS_FAR:
+            if distancia > 1000 and units_available < 3:
                 is_viable = False
-                viability_reason = f"Solo {units_available} unidades para >500km (mínimo {MIN_UNITS_FAR})"
-            elif distancia > 200 and units_available < MIN_UNITS_REMOTE:
+                viability_reason = f"Solo {units_available} unidades para >1000km (mínimo 3)"
+            elif cost_per_unit > MAX_COST_PER_UNIT and distancia > 200:
                 is_viable = False
-                viability_reason = f"Solo {units_available} unidades para >200km (mínimo {MIN_UNITS_REMOTE})"
-            elif distancia > 50 and units_available < MIN_UNITS_REGIONAL:
-                is_viable = False
-                viability_reason = f"Solo {units_available} unidades para >50km (mínimo {MIN_UNITS_REGIONAL})"
-            elif cost_per_unit > MAX_COST_PER_UNIT:
-                is_viable = False
-                viability_reason = f"Costo/unidad ${cost_per_unit:.0f} excede máximo ${MAX_COST_PER_UNIT}"
+                viability_reason = f"Costo/unidad ${cost_per_unit:.0f} excede máximo ${MAX_COST_PER_UNIT} para distancia >200km"
 
             candidates_data.append({
                 'tienda_id': tienda_id,
@@ -318,9 +312,8 @@ class OptimizedStockRepository:
                 logger.info(f"   ❌ {candidate['nombre_tienda']}: {candidate['viability_reason']}")
 
         if not viable_candidates:
-            # Si no hay candidatos viables, tomar los mejores disponibles con advertencia
-            logger.warning("⚠️ No hay candidatos óptimos, usando mejores disponibles")
-            viable_candidates = sorted(candidates_data, key=lambda x: x['cost_per_unit'])[:3]
+            logger.warning("⚠️ No hay candidatos óptimos por restricciones, usando TODOS los disponibles")
+            viable_candidates = candidates_data
 
         # ✅ 5. NORMALIZACIÓN Y SCORING (solo para viables)
         if len(viable_candidates) > 0:
@@ -348,6 +341,8 @@ class OptimizedStockRepository:
 
             # Calcular scores
             for candidate in viable_candidates:
+                candidate['is_viable'] = True
+                candidate['viability_reason'] = "Forzado - sin otras opciones"
                 # Normalización
                 score_tiempo = 1 - (candidate['tiempo_total_horas'] - min_tiempo) / max(max_tiempo - min_tiempo, 0.1)
                 score_costo = 1 - (candidate['costo_total'] - min_costo) / max(max_costo - min_costo, 0.1)
